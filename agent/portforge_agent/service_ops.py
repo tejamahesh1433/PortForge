@@ -69,6 +69,49 @@ def _run(args: List[str], timeout: float = 15.0) -> subprocess.CompletedProcess:
 # Windows: Task Scheduler
 # ---------------------------------------------------------------------------
 
+# Physical validation on a real (non-admin) Windows host found that some
+# environments refuse *any* schtasks.exe create/query/run/end/delete call
+# for a standard user -- confirmed via a control test with a throwaway task
+# name and the exact same /SC ONLOGON /RL LIMITED flags PortForge uses,
+# which failed identically. That means "no elevation required" does not
+# hold universally: it's the intended, common case, but this environment's
+# own Task Scheduler ACL/policy can still require an elevated session. Per
+# the "must not silently require Administrator privileges unless genuinely
+# necessary; if elevation is required for a particular mode, detect and
+# explain it" requirement, every Windows operation below recognizes this
+# specific failure and replaces schtasks's bare "Access is denied" with an
+# actionable explanation instead of a raw pass-through error.
+_WINDOWS_ELEVATION_HINT = (
+    "Task Scheduler refused this operation for the current (non-administrator) "
+    "user. Some Windows environments restrict schtasks.exe task creation/"
+    "management to elevated sessions even for a per-user ONLOGON task at the "
+    "standard (LIMITED) run level -- this is a local Windows/Group Policy "
+    "restriction, not something PortForge can route around. Retry from an "
+    "elevated ('Run as administrator') PowerShell or Command Prompt, or ask "
+    "your system administrator to grant Task Scheduler access to this account."
+)
+
+
+def _is_access_denied(text: str) -> bool:
+    return "access is denied" in text.lower()
+
+
+def _windows_failure_result(
+    result: subprocess.CompletedProcess, *, generic_message: str, denied_message: str
+) -> ServiceOpResult:
+    """Build the ServiceOpResult for a failed schtasks.exe call, detecting
+    the environment-requires-elevation case (see _WINDOWS_ELEVATION_HINT
+    above) and giving it a distinct, actionable message rather than
+    surfacing schtasks's bare "Access is denied" unexplained.
+    """
+    detail = (result.stderr or result.stdout).strip()
+    if _is_access_denied(detail):
+        return ServiceOpResult(
+            False, denied_message, detail=f"{_WINDOWS_ELEVATION_HINT}\n\nRaw error: {detail}",
+            returncode=result.returncode,
+        )
+    return ServiceOpResult(False, generic_message, detail=detail, returncode=result.returncode)
+
 
 def _install_windows() -> ServiceOpResult:
     definition = gen.build_windows_task()
@@ -80,11 +123,13 @@ def _install_windows() -> ServiceOpResult:
             "(trigger: user logon, no elevation required).",
             detail=result.stdout.strip(),
         )
-    return ServiceOpResult(
-        False,
-        f"Failed to create Task Scheduler task '{definition.task_name}'.",
-        detail=(result.stderr or result.stdout).strip(),
-        returncode=result.returncode,
+    return _windows_failure_result(
+        result,
+        generic_message=f"Failed to create Task Scheduler task '{definition.task_name}'.",
+        denied_message=(
+            f"Failed to create Task Scheduler task '{definition.task_name}': "
+            "administrator elevation is required in this environment."
+        ),
     )
 
 
@@ -92,11 +137,10 @@ def _status_windows() -> ServiceOpResult:
     result = _run(gen.windows_query_args())
     if result.returncode == 0:
         return ServiceOpResult(True, "Task Scheduler task is installed.", detail=result.stdout.strip())
-    return ServiceOpResult(
-        False,
-        "Task Scheduler task is not installed.",
-        detail=(result.stderr or result.stdout).strip(),
-        returncode=result.returncode,
+    return _windows_failure_result(
+        result,
+        generic_message="Task Scheduler task is not installed.",
+        denied_message="Could not check Task Scheduler task status: administrator elevation is required in this environment.",
     )
 
 
@@ -104,9 +148,10 @@ def _start_windows() -> ServiceOpResult:
     result = _run(gen.windows_run_args())
     if result.returncode == 0:
         return ServiceOpResult(True, "Task Scheduler task triggered.", detail=result.stdout.strip())
-    return ServiceOpResult(
-        False, "Failed to trigger Task Scheduler task.", detail=(result.stderr or result.stdout).strip(),
-        returncode=result.returncode,
+    return _windows_failure_result(
+        result,
+        generic_message="Failed to trigger Task Scheduler task.",
+        denied_message="Failed to trigger Task Scheduler task: administrator elevation is required in this environment.",
     )
 
 
@@ -114,9 +159,10 @@ def _stop_windows() -> ServiceOpResult:
     result = _run(gen.windows_end_args())
     if result.returncode == 0:
         return ServiceOpResult(True, "Task Scheduler task ended.", detail=result.stdout.strip())
-    return ServiceOpResult(
-        False, "Failed to end Task Scheduler task (it may not currently be running).",
-        detail=(result.stderr or result.stdout).strip(), returncode=result.returncode,
+    return _windows_failure_result(
+        result,
+        generic_message="Failed to end Task Scheduler task (it may not currently be running).",
+        denied_message="Failed to end Task Scheduler task: administrator elevation is required in this environment.",
     )
 
 
@@ -130,9 +176,10 @@ def _uninstall_windows() -> ServiceOpResult:
             True, "Task Scheduler task was already absent (nothing to remove).",
             detail=(result.stderr or result.stdout).strip(),
         )
-    return ServiceOpResult(
-        False, "Failed to remove Task Scheduler task.", detail=(result.stderr or result.stdout).strip(),
-        returncode=result.returncode,
+    return _windows_failure_result(
+        result,
+        generic_message="Failed to remove Task Scheduler task.",
+        denied_message="Failed to remove Task Scheduler task: administrator elevation is required in this environment.",
     )
 
 

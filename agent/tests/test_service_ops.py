@@ -123,6 +123,87 @@ def test_uninstall_windows_when_already_absent_does_not_error_twice(monkeypatch)
 
 
 # ---------------------------------------------------------------------------
+# Windows elevation detection -- found via physical validation on a real,
+# non-admin host: a control test using a throwaway task name with the exact
+# same /SC ONLOGON /RL LIMITED flags PortForge generates also failed with
+# "Access is denied", proving some Windows environments refuse schtasks.exe
+# entirely for a standard user regardless of trigger/run-level. Every
+# Windows operation must recognize this specific failure and explain it
+# (not silently mask a real elevation requirement, and not just parrot the
+# bare native error either).
+# ---------------------------------------------------------------------------
+
+_ACCESS_DENIED = _cp(1, "", "ERROR: Access is denied.")
+
+
+def test_install_windows_access_denied_is_explained(monkeypatch):
+    monkeypatch.setattr(pf, "detect_os", lambda: pf.OperatingSystem.WINDOWS)
+    with patch("portforge_agent.service_ops._run", return_value=_ACCESS_DENIED):
+        result = service_ops.install()
+
+    assert result.success is False
+    assert "elevation" in result.message.lower()
+    assert "elevated" in result.detail.lower()
+    assert "access is denied" in result.detail.lower()  # raw error still preserved
+
+
+def test_status_windows_access_denied_is_explained(monkeypatch):
+    monkeypatch.setattr(pf, "detect_os", lambda: pf.OperatingSystem.WINDOWS)
+    with patch("portforge_agent.service_ops._run", return_value=_ACCESS_DENIED):
+        result = service_ops.status()
+
+    assert result.success is False
+    assert "elevation" in result.message.lower()
+
+
+def test_start_windows_access_denied_is_explained(monkeypatch):
+    monkeypatch.setattr(pf, "detect_os", lambda: pf.OperatingSystem.WINDOWS)
+    with patch("portforge_agent.service_ops._run", return_value=_ACCESS_DENIED):
+        result = service_ops.start()
+
+    assert result.success is False
+    assert "elevation" in result.message.lower()
+
+
+def test_stop_windows_access_denied_is_explained(monkeypatch):
+    monkeypatch.setattr(pf, "detect_os", lambda: pf.OperatingSystem.WINDOWS)
+    with patch("portforge_agent.service_ops._run", return_value=_ACCESS_DENIED):
+        result = service_ops.stop()
+
+    assert result.success is False
+    assert "elevation" in result.message.lower()
+
+
+def test_uninstall_windows_access_denied_is_explained_not_treated_as_absent(monkeypatch):
+    """A real "Access is denied" must never be mistaken for the
+    already-absent case (which also has a non-zero returncode) -- the
+    denial explanation must win over the absence heuristic.
+    """
+    monkeypatch.setattr(pf, "detect_os", lambda: pf.OperatingSystem.WINDOWS)
+    with patch("portforge_agent.service_ops._run", return_value=_ACCESS_DENIED):
+        result = service_ops.uninstall()
+
+    assert result.success is False
+    assert "elevation" in result.message.lower()
+    assert "already absent" not in result.message.lower()
+
+
+def test_windows_access_denied_message_does_not_leak_into_success_path(monkeypatch):
+    """Sanity check: a normal successful install must not be flagged as an
+    elevation *requirement* -- it's only for the denied-failure path (the
+    success message already, separately, notes "no elevation required" as
+    a description of the design, which is a different claim).
+    """
+    monkeypatch.setattr(pf, "detect_os", lambda: pf.OperatingSystem.WINDOWS)
+    with patch("portforge_agent.service_ops._run", return_value=_cp(0, "SUCCESS")):
+        result = service_ops.install()
+
+    assert result.success is True
+    assert "elevation is required" not in result.message.lower()
+    assert result.detail == "SUCCESS"
+
+
+# ---------------------------------------------------------------------------
 # macOS: launchd
 # ---------------------------------------------------------------------------
 

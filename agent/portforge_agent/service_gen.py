@@ -17,7 +17,12 @@ system-wide service would either need a stored account password (Windows
 "run whether logged on or not"), run as root without the user's own
 config (macOS/Linux), or otherwise broaden privileges beyond what the
 agent actually needs. Per-user startup also means none of these three
-installs ever requires administrator/root elevation.
+installs *by design* requires administrator/root elevation -- though
+physical validation found that some Windows environments' own Task
+Scheduler ACL/Group Policy can still refuse schtasks.exe operations for a
+standard user regardless of trigger/run-level; service_ops.py detects
+that specific failure and explains it rather than silently requiring (or
+masking the need for) elevation. See _WINDOWS_ELEVATION_HINT there.
 
 Nothing generated here ever embeds a credential, bootstrap token,
 enrollment token, GitHub token, or database password -- the generated
@@ -136,8 +141,12 @@ class WindowsTaskDefinition:
     an account password (a secret we must never store) via /RU + /RP.
     ONLOGON tasks created without /RU run as the creating user with no
     password prompt, and /RL LIMITED keeps the run level standard rather
-    than requiring "highest privileges" -- so installing this task never
-    needs administrator elevation.
+    than requiring "highest privileges" -- so installing this task does
+    not, by design, need administrator elevation. Some Windows
+    environments' own Task Scheduler ACL/Group Policy can still refuse
+    schtasks.exe entirely for a standard user regardless of these flags
+    (confirmed via physical validation); service_ops.py detects that
+    specific failure and explains it rather than papering over it.
     """
 
     task_name: str
