@@ -6,6 +6,8 @@ FROM python:3.12-slim
 WORKDIR /app
 
 COPY agent /app/agent
+RUN pip install --no-cache-dir /app/agent
+
 COPY backend/requirements.txt /app/backend/requirements.txt
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 

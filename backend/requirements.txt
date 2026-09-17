@@ -9,5 +9,4 @@ pydantic-settings>=2.10
 # Shared domain value types (Protocol/PortState/Confidence) -- see
 # app/models/base.py's module docstring for why the central server
 # depends on the agent library rather than a third duplicate package.
-# Editable install: `pip install -e ../agent` (see backend/README.md).
--e ../agent
+# Installed explicitly in Dockerfile; for local dev see requirements-dev.txt
