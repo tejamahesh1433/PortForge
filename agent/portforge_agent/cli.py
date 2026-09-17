@@ -775,6 +775,9 @@ def build_parser() -> argparse.ArgumentParser:
     central_sync_parser.add_argument("--json", action="store_true")
     central_sync_parser.set_defaults(func=_cmd_central_sync)
 
+    from .cli_agent import add_agent_subparsers
+    add_agent_subparsers(subparsers)
+
     return parser
 
 

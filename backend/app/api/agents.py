@@ -43,6 +43,7 @@ def mint_enrollment_token(label: str | None = None, ttl_hours: int = 24, db: Ses
     """
     ttl = timedelta(hours=ttl_hours) if ttl_hours > 0 else None
     minted = enrollment_service.mint_enrollment_token(db, label=label, ttl=ttl)
+    db.commit()
     return {
         "enrollment_token": minted.raw_token,
         "expires_at": minted.expires_at.isoformat() if minted.expires_at else None,

@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.env
+.pytest_cache/
+.coverage
+htmlcov/
+venv/
+.venv/
+env/
+.env_portforge/
+credentials.json
+runtime_state.json
+reservations.json
+reservations.yml
