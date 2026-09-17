@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 import sys
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import pytest
@@ -113,3 +114,59 @@ def new_uuid() -> uuid.UUID:
 @pytest.fixture()
 def now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+@pytest.fixture()
+def db(db_session: Session) -> Session:
+    """Alias for `db_session`, same instance (pytest caches fixtures per
+    test, so any test requesting both `client` and `db` -- or `db` and
+    `enrolled_host`, which itself depends on `client` -- shares one
+    transaction; a DB write made via `client`'s HTTP calls is visible
+    through `db` without a commit crossing the outer rollback boundary).
+    Some tests were written expecting this more generic name; this adds
+    the alias rather than duplicating session-setup logic a second time.
+    """
+    return db_session
+
+
+@dataclass(frozen=True)
+class EnrolledHost:
+    id: uuid.UUID
+    agent_token: str
+    hostname: str
+
+
+@pytest.fixture()
+def enrolled_host(client: TestClient) -> EnrolledHost:
+    """A real, enrolled host via the actual HTTP enrollment flow (admin
+    mints an enrollment token, then POST /api/agent/enroll) -- exercises
+    the same path a real agent uses, rather than inserting rows directly.
+    Mirrors the `_enroll`/`_enroll_via_api` helpers already hand-rolled in
+    several test files (test_api_agents.py, test_api_reservations.py,
+    test_multihost_simulation.py, test_security_hardening.py); kept here
+    as an opt-in fixture rather than refactoring those existing,
+    already-passing tests to use it, per the focused scope of this repair.
+    """
+    mint_response = client.post(
+        "/api/agent/enrollment-tokens", headers={"Authorization": "Bearer test-admin-bootstrap-token"}
+    )
+    assert mint_response.status_code == 200, mint_response.text
+    enrollment_token = mint_response.json()["enrollment_token"]
+
+    host_id = uuid.uuid4()
+    enroll_response = client.post(
+        "/api/agent/enroll",
+        json={
+            "enrollment_token": enrollment_token,
+            "host_id": str(host_id),
+            "hostname": "test-enrolled-host",
+            "operating_system": "linux",
+            "docker_available": True,
+        },
+    )
+    assert enroll_response.status_code == 200, enroll_response.text
+    body = enroll_response.json()
+
+    return EnrolledHost(
+        id=uuid.UUID(body["host_id"]), agent_token=body["agent_token"], hostname="test-enrolled-host"
+    )
