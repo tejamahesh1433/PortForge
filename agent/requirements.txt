@@ -1,0 +1,9 @@
+psutil>=5.9
+# PyYAML: Phase 4 project-level config (.portforge.yml) needs to parse a
+# nested list-of-dicts structure (a `ports:` list, each with port/service/
+# purpose) that a hand-rolled single-key regex parser (used for the
+# Phase 3 minimal `project: <name>` case) can't represent safely. Only
+# yaml.safe_load() is ever used -- never the default/full loader -- so no
+# YAML content can execute arbitrary Python, consistent with "never
+# execute project files."
+pyyaml>=6.0

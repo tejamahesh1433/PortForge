@@ -1,0 +1,64 @@
+########################################################################
+# PortForge central development stack (Phase 5).
+#
+# Central server is entirely optional -- the local `portforge` CLI never
+# depends on this being up. This exists to run the central registry
+# locally during development.
+#
+# Host ports are NEVER hardcoded to a bare guess: both default to
+# deliberately uncommon values (55432 for Postgres, 58000 for the API --
+# verified free on the development machine with `portforge check`, and
+# reserved locally with `portforge reserve ... --project portforge-backend`
+# before this file existed) and are fully overridable via environment
+# variables, per the project brief. Pick your own if these ever collide:
+#
+#   PORTFORGE_DB_HOST_PORT=55432 PORTFORGE_API_HOST_PORT=58000 docker compose up
+#
+# No frontend service yet -- that's a later phase.
+########################################################################
+
+services:
+  portforge-postgres:
+    image: postgres:16-alpine
+    container_name: portforge-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${PORTFORGE_DB_NAME:-portforge}
+      POSTGRES_USER: ${PORTFORGE_DB_USER:-portforge}
+      POSTGRES_PASSWORD: ${PORTFORGE_DB_PASSWORD:-portforge}
+    ports:
+      - "${PORTFORGE_DB_HOST_PORT:-55432}:5432"
+    volumes:
+      - portforge-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PORTFORGE_DB_USER:-portforge} -d ${PORTFORGE_DB_NAME:-portforge}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  portforge-api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: portforge-api
+    restart: unless-stopped
+    environment:
+      PORTFORGE_DB_HOST: portforge-postgres
+      PORTFORGE_DB_HOST_PORT: 5432 # in-network port, not the published host port above
+      PORTFORGE_DB_NAME: ${PORTFORGE_DB_NAME:-portforge}
+      PORTFORGE_DB_USER: ${PORTFORGE_DB_USER:-portforge}
+      PORTFORGE_DB_PASSWORD: ${PORTFORGE_DB_PASSWORD:-portforge}
+      PORTFORGE_ADMIN_BOOTSTRAP_TOKEN: ${PORTFORGE_ADMIN_BOOTSTRAP_TOKEN:?set PORTFORGE_ADMIN_BOOTSTRAP_TOKEN before starting}
+    ports:
+      - "${PORTFORGE_API_HOST_PORT:-58000}:8000"
+    depends_on:
+      portforge-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  portforge-postgres-data:

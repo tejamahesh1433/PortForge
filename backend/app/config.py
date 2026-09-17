@@ -1,0 +1,59 @@
+"""Central server configuration.
+
+Everything here comes from environment variables (optionally loaded from a
+local `.env` file for development) -- nothing is hardcoded, per the same
+"no hardcoded machine names/paths/ports" discipline the agent follows. In
+particular, the PostgreSQL host port and the API's own host port are both
+configurable specifically so they never blindly collide with a port an
+existing project already uses on the developer's machine (see
+docker-compose.yml and README "Choosing ports").
+"""
+from __future__ import annotations
+
+from functools import lru_cache
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="PORTFORGE_", env_file=".env", extra="ignore")
+
+    # --- Database -----------------------------------------------------
+    # A full DATABASE_URL always wins if set; otherwise it's assembled
+    # from the individual DB_* pieces below (convenient for docker-compose
+    # env files where each piece is set separately).
+    database_url: str | None = None
+    db_host: str = "localhost"
+    db_host_port: int = 55432  # PORTFORGE_DB_HOST_PORT -- see docker-compose.yml
+    db_name: str = "portforge"
+    db_user: str = "portforge"
+    db_password: str = "portforge"
+
+    # --- API ------------------------------------------------------------
+    api_host_port: int = 58000  # PORTFORGE_API_HOST_PORT
+    environment: str = "development"
+    version: str = "0.1.0"
+
+    # --- Security ---------------------------------------------------------
+    # Required to mint enrollment tokens (see security/tokens.py). Deliberately
+    # has NO default -- an admin must set it explicitly. Never logged, never
+    # echoed in any API response (see api/health.py and security/tokens.py).
+    admin_bootstrap_token: str | None = None
+
+    # --- Ingestion limits ---------------------------------------------------
+    max_observations_per_snapshot: int = 5000
+    max_string_length: int = 4096
+
+    @property
+    def sqlalchemy_database_url(self) -> str:
+        if self.database_url:
+            return self.database_url
+        return (
+            f"postgresql+psycopg://{self.db_user}:{self.db_password}"
+            f"@{self.db_host}:{self.db_host_port}/{self.db_name}"
+        )
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

@@ -1,0 +1,2 @@
+[console_scripts]
+portforge = portforge_agent.cli:main
