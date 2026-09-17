@@ -4,6 +4,13 @@ Docker discovery is optional. These tests cover the "Docker isn't usable
 right now" paths (missing CLI, daemon down, timeout, permission denied,
 malformed output) as well as the metadata-parsing paths, all against
 mocked `run_command` output -- no real `docker` invocation.
+
+`_resolve_docker_executable()` (which real `_run_docker()` calls before
+`run_command`) is mocked to a fixed fake path via the autouse fixture
+below, for every test in this file -- otherwise these tests would depend
+on whether `docker` actually happens to be on the machine running them
+(see test_docker_executable_resolution.py for the tests that exercise
+resolution itself; those intentionally don't use this fixture).
 """
 import json
 
@@ -17,6 +24,11 @@ from portforge_agent.collectors.docker import (
     container_record_to_ports,
 )
 from portforge_agent.models import Protocol, Source
+
+
+@pytest.fixture(autouse=True)
+def _fixed_docker_executable(monkeypatch):
+    monkeypatch.setattr(docker_module, "_resolve_docker_executable", lambda: "/usr/bin/docker")
 
 
 def _record(

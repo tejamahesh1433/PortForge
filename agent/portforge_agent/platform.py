@@ -23,6 +23,24 @@ class OperatingSystem(str, Enum):
     UNKNOWN = "unknown"
 
 
+# Well-known macOS locations for CLI tools installed outside the standard
+# system PATH (Homebrew on Intel vs. Apple Silicon, Docker Desktop's
+# bundled CLI). launchd gives every login-item process (LaunchAgents
+# included) only the minimal /usr/bin:/bin:/usr/sbin:/sbin -- none of
+# these -- which is why a tool installed via Homebrew or Docker Desktop
+# resolves fine in an interactive shell but not under a LaunchAgent.
+# Referenced by both collectors/docker.py (resolving the `docker`
+# executable directly) and service_gen.py (building the LaunchAgent's
+# PATH) so the two stay in sync. A fixed, reviewed list -- never a
+# recursive filesystem search, and never sourced from a user's shell
+# startup file (.zshrc/.bashrc/Homebrew shellenv/...).
+MACOS_EXTRA_BIN_DIRS = (
+    "/usr/local/bin",
+    "/opt/homebrew/bin",
+    "/Applications/Docker.app/Contents/Resources/bin",
+)
+
+
 def detect_os() -> OperatingSystem:
     """Detect the current operating system using ``platform.system()``.
 

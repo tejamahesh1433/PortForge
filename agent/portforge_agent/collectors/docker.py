@@ -22,11 +22,25 @@ non-empty list means it is published; each list entry is one host binding
 (``{"HostIp": ..., "HostPort": ...}``), and a single container port can have
 multiple bindings (e.g. Docker Desktop typically dual-stack publishes to
 both ``0.0.0.0`` and ``::``).
+
+Every `docker` invocation goes through ``_resolve_docker_executable()``
+rather than the bare string ``"docker"`` -- physically reproduced on
+tejamaheshs-MacBook-Pro.local: a macOS LaunchAgent's PATH is launchd's
+minimal ``/usr/bin:/bin:/usr/sbin:/sbin``, which doesn't include Homebrew
+or Docker Desktop's bundled CLI location, so background (non-interactive)
+discovery reported "Required command not found: docker" even though
+Docker worked fine interactively. See that function's docstring for the
+resolution order (PATH first, then a small fixed list of known macOS
+locations -- see also service_gen.py, which independently gives the
+LaunchAgent itself a fuller PATH via the same
+``platform.MACOS_EXTRA_BIN_DIRS`` list, as defense in depth).
 """
 from __future__ import annotations
 
 import json
 import logging
+import os
+import shutil
 from typing import Any, Dict, List, Optional, Tuple
 
 from .. import platform as pf
@@ -54,9 +68,52 @@ class DockerUnavailableError(CollectorError):
     """
 
 
+def _resolve_docker_executable() -> Optional[str]:
+    """Absolute path to the `docker` CLI, or None if it can't be found.
+
+    Tries normal PATH resolution first (`shutil.which`) -- when the
+    invoking process's PATH already includes it (the common interactive
+    case, and Linux/Windows in general), this is a no-op versus the old
+    bare `"docker"` behavior. Only falls back to a small, fixed list of
+    well-known macOS install locations (platform.MACOS_EXTRA_BIN_DIRS)
+    when PATH resolution fails -- exactly the launchd LaunchAgent case
+    (minimal /usr/bin:/bin:/usr/sbin:/sbin PATH, no Homebrew/Docker
+    Desktop locations). Never searches the filesystem recursively, never
+    sources a shell startup file, and never runs anything outside this
+    fixed list -- each candidate is checked to actually be a file and
+    executable before being returned.
+    """
+    found = shutil.which("docker")
+    if found:
+        return found
+
+    if pf.detect_os() != pf.OperatingSystem.MACOS:
+        return None
+
+    for directory in pf.MACOS_EXTRA_BIN_DIRS:
+        # Plain string join, not pathlib -- MACOS_EXTRA_BIN_DIRS is always
+        # forward-slash (it only ever matters on macOS), and pathlib.Path
+        # renders with the *host* OS's separator on str(), which would be
+        # wrong here if this ever ran under test on a non-POSIX machine.
+        candidate = f"{directory}/docker"
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+
+    return None
+
+
 def _run_docker(args: List[str], timeout: float) -> str:
+    executable = _resolve_docker_executable()
+    if executable is None:
+        # Same message `run_command` itself would raise on a bare
+        # FileNotFoundError for "docker" -- preserves the existing,
+        # distinct "not installed" wording callers/logs already expect,
+        # separate from a found-but-failing invocation below (e.g. "daemon
+        # unavailable"), which still raises its own distinct message via
+        # run_command's normal non-zero-exit handling.
+        raise DockerUnavailableError("Required command not found: docker")
     try:
-        return run_command(["docker", *args], timeout=timeout)
+        return run_command([executable, *args], timeout=timeout)
     except CollectorError as exc:
         raise DockerUnavailableError(str(exc)) from exc
 

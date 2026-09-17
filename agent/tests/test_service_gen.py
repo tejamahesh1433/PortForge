@@ -248,6 +248,7 @@ def test_build_launchd_plist_dict_structure(tmp_path):
     assert d["KeepAlive"] == {"SuccessfulExit": False}
     assert d["StandardOutPath"] == str(tmp_path / "agent.out.log")
     assert d["StandardErrorPath"] == str(tmp_path / "agent.err.log")
+    assert d["EnvironmentVariables"]["PATH"].startswith("/usr/bin:/bin:/usr/sbin:/sbin")
 
 
 def test_build_launchd_plist_bytes_round_trips_via_plistlib(tmp_path):
@@ -264,6 +265,109 @@ def test_launchd_plist_path_is_per_user_launchagents(monkeypatch, tmp_path):
 
     assert result == tmp_path / "Library" / "LaunchAgents" / f"{gen.LAUNCHD_LABEL}.plist"
     assert "LaunchDaemons" not in str(result)  # never system-wide -- see module docstring
+
+
+# ---------------------------------------------------------------------------
+# macOS: LaunchAgent PATH -- launchd's own default PATH
+# (/usr/bin:/bin:/usr/sbin:/sbin) omits Homebrew/Docker Desktop locations,
+# which is what made background Docker discovery fail while interactive
+# discovery worked fine. See collectors/docker.py's module docstring for
+# the physical reproduction on tejamaheshs-MacBook-Pro.local.
+# ---------------------------------------------------------------------------
+
+
+def test_build_launchd_path_always_includes_standard_system_dirs(monkeypatch):
+    monkeypatch.setattr(Path, "is_dir", lambda self: False)
+
+    result = gen.build_launchd_path()
+
+    assert result == "/usr/bin:/bin:/usr/sbin:/sbin"
+
+
+def test_build_launchd_path_includes_usr_local_bin_when_present(monkeypatch):
+    # Compares Path-to-Path (both constructed identically), not raw
+    # strings -- pathlib.Path renders with the *host* OS's separator on
+    # str(), which would make a forward-slash string comparison spurious
+    # when this test runs on a non-POSIX machine.
+    monkeypatch.setattr(Path, "is_dir", lambda self: self == Path("/usr/local/bin"))
+
+    result = gen.build_launchd_path()
+
+    assert "/usr/local/bin" in result.split(":")
+
+
+def test_build_launchd_path_includes_homebrew_apple_silicon_when_present(monkeypatch):
+    monkeypatch.setattr(Path, "is_dir", lambda self: self == Path("/opt/homebrew/bin"))
+
+    result = gen.build_launchd_path()
+
+    assert "/opt/homebrew/bin" in result.split(":")
+
+
+def test_build_launchd_path_includes_docker_desktop_resource_bin_when_present(monkeypatch):
+    monkeypatch.setattr(
+        Path, "is_dir", lambda self: self == Path("/Applications/Docker.app/Contents/Resources/bin")
+    )
+
+    result = gen.build_launchd_path()
+
+    assert "/Applications/Docker.app/Contents/Resources/bin" in result.split(":")
+
+
+def test_build_launchd_path_omits_directories_absent_from_the_machine(monkeypatch):
+    """None of the extra directories exist here -- PATH must contain only
+    the standard system directories, never a guessed/nonexistent one.
+    """
+    monkeypatch.setattr(Path, "is_dir", lambda self: False)
+
+    result = gen.build_launchd_path()
+
+    for standard in ("/usr/bin", "/bin", "/usr/sbin", "/sbin"):
+        assert standard in result.split(":")
+    for extra in pf.MACOS_EXTRA_BIN_DIRS:
+        assert extra not in result.split(":")
+
+
+def test_build_launchd_path_preserves_standard_dirs_order_first(monkeypatch):
+    """Standard system directories always come first, in a fixed order --
+    deterministic regardless of which extra directories exist.
+    """
+    monkeypatch.setattr(Path, "is_dir", lambda self: True)
+
+    result = gen.build_launchd_path().split(":")
+
+    assert result[:4] == ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+
+
+def test_build_launchd_path_is_deterministic_across_calls(monkeypatch):
+    monkeypatch.setattr(Path, "is_dir", lambda self: True)
+
+    first = gen.build_launchd_path()
+    second = gen.build_launchd_path()
+
+    assert first == second
+
+
+def test_build_launchd_path_with_all_known_locations_present(monkeypatch):
+    """Mirrors the case where interactive PATH already contains Docker --
+    all extra locations exist, all get included, standard dirs still
+    lead deterministically."""
+    monkeypatch.setattr(Path, "is_dir", lambda self: True)
+
+    result = gen.build_launchd_path()
+
+    assert result == (
+        "/usr/bin:/bin:/usr/sbin:/sbin:"
+        "/usr/local/bin:/opt/homebrew/bin:/Applications/Docker.app/Contents/Resources/bin"
+    )
+
+
+def test_build_launchd_path_accepts_explicit_override(monkeypatch):
+    monkeypatch.setattr(Path, "is_dir", lambda self: True)
+
+    result = gen.build_launchd_path(extra_dirs=("/custom/tool/bin",))
+
+    assert result == "/usr/bin:/bin:/usr/sbin:/sbin:/custom/tool/bin"
 
 
 # ---------------------------------------------------------------------------

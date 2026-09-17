@@ -210,6 +210,34 @@ def launchd_log_paths(log_dir: Optional[Path] = None) -> "tuple[Path, Path]":
     return log_dir / "agent.out.log", log_dir / "agent.err.log"
 
 
+# Standard system directories every macOS process has regardless of
+# launchd's own minimal default PATH -- always included, first, and in
+# this order, so the generated PATH is deterministic run to run.
+_MACOS_STANDARD_PATH_DIRS: "tuple[str, ...]" = ("/usr/bin", "/bin", "/usr/sbin", "/sbin")
+
+
+def build_launchd_path(extra_dirs: Optional["tuple[str, ...]"] = None) -> str:
+    """Deterministic PATH for the LaunchAgent's EnvironmentVariables.
+
+    launchd gives every login-item process (LaunchAgents included) only
+    the minimal ``/usr/bin:/bin:/usr/sbin:/sbin`` -- none of Homebrew's or
+    Docker Desktop's install locations -- which is why e.g. the Docker CLI
+    resolves fine in an interactive shell but not under the LaunchAgent
+    (see collectors/docker.py's module docstring for the physical
+    reproduction). Built from the fixed standard directories plus
+    ``platform.MACOS_EXTRA_BIN_DIRS`` (or an explicit override), each
+    included only if it actually exists on THIS machine -- never a blind
+    assumption, never sourced from a user's shell startup file
+    (.zshrc/.bashrc/Homebrew shellenv/...), never a recursive search.
+    """
+    candidates = extra_dirs if extra_dirs is not None else pf.MACOS_EXTRA_BIN_DIRS
+    dirs = list(_MACOS_STANDARD_PATH_DIRS)
+    for directory in candidates:
+        if directory not in dirs and Path(directory).is_dir():
+            dirs.append(directory)
+    return ":".join(dirs)
+
+
 def build_launchd_plist_dict(
     python_executable: Optional[str] = None, log_dir: Optional[Path] = None
 ) -> Dict:
@@ -224,6 +252,10 @@ def build_launchd_plist_dict(
     both when a SIGTERM/SIGINT asks it to stop and when central sync
     isn't configured yet, so `portforge agent service stop` doesn't fight
     launchd's own restart logic.
+
+    EnvironmentVariables.PATH (see build_launchd_path()) is what lets
+    background Docker discovery find the `docker` CLI under launchd's
+    otherwise-minimal PATH without sourcing any user shell configuration.
     """
     stdout_path, stderr_path = launchd_log_paths(log_dir)
     return {
@@ -233,6 +265,7 @@ def build_launchd_plist_dict(
         "KeepAlive": {"SuccessfulExit": False},
         "StandardOutPath": str(stdout_path),
         "StandardErrorPath": str(stderr_path),
+        "EnvironmentVariables": {"PATH": build_launchd_path()},
     }
 
 
