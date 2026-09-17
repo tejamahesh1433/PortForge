@@ -4,6 +4,7 @@ for the mocked-subprocess install/start/stop/status/uninstall layer.
 """
 from __future__ import annotations
 
+import os
 import plistlib
 from pathlib import Path
 
@@ -40,18 +41,157 @@ def test_resolve_python_executable_falls_back_when_pythonw_absent(monkeypatch):
     assert "pythonw" not in result.lower()
 
 
+# These tests simulate POSIX-style sys.executable values (Linux/macOS venv
+# and system paths) while the suite itself may run on any host OS,
+# including Windows. `os.path.isabs` is platform-native (ntpath vs.
+# posixpath), and Windows' isabs does not consider a driveless
+# "/foo/bar"-style path absolute the way posixpath does -- that mismatch is
+# purely a cross-platform testing artifact (a real sys.executable is always
+# already absolute in its own OS's terms), so these tests pin `isabs` to
+# posix-style semantics rather than relying on the ambient host OS's rules.
+def _assume_already_absolute(monkeypatch) -> None:
+    monkeypatch.setattr(gen.os.path, "isabs", lambda p: True)
+
+
 def test_resolve_python_executable_uses_sys_executable_on_non_windows(monkeypatch):
     monkeypatch.setattr(gen.sys, "executable", "/usr/bin/python3")
     monkeypatch.setattr(gen.pf, "detect_os", lambda: pf.OperatingSystem.LINUX)
+    _assume_already_absolute(monkeypatch)
 
     result = gen.resolve_python_executable()
 
-    assert result == str(Path("/usr/bin/python3").resolve())
+    # No .resolve() -- an already-absolute sys.executable is returned as-is,
+    # as a plain string (never round-tripped through pathlib.Path, which
+    # would rewrite separators to the host OS's style).
+    assert result == "/usr/bin/python3"
 
 
 def test_agent_run_args_shape():
     args = gen.agent_run_args(python_executable="/usr/bin/python3")
     assert args == ["/usr/bin/python3", "-m", "portforge_agent", "agent", "run"]
+
+
+# ---------------------------------------------------------------------------
+# Regression: virtualenv interpreter identity must be preserved, never
+# dereferenced down to a base/system interpreter (see service_gen.py's
+# resolve_python_executable docstring for the full rationale).
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_python_executable_preserves_linux_venv_interpreter(monkeypatch):
+    monkeypatch.setattr(gen.sys, "executable", "/home/test/project/.venv/bin/python")
+    monkeypatch.setattr(gen.pf, "detect_os", lambda: pf.OperatingSystem.LINUX)
+    _assume_already_absolute(monkeypatch)
+
+    result = gen.resolve_python_executable()
+
+    assert result == "/home/test/project/.venv/bin/python"
+
+
+def test_resolve_python_executable_never_calls_path_resolve(monkeypatch):
+    """The historical bug: Path(sys.executable).resolve() dereferences a
+    virtualenv's python symlink down to the base/system interpreter,
+    generating a service that can't import portforge_agent. Patching
+    Path.resolve to something obviously wrong proves the fix's result
+    doesn't come from it.
+    """
+    monkeypatch.setattr(gen.sys, "executable", "/home/test/project/.venv/bin/python")
+    monkeypatch.setattr(gen.pf, "detect_os", lambda: pf.OperatingSystem.LINUX)
+    _assume_already_absolute(monkeypatch)
+    monkeypatch.setattr(Path, "resolve", lambda self, *a, **k: Path("/usr/bin/python3.14"))
+
+    result = gen.resolve_python_executable()
+
+    assert result == "/home/test/project/.venv/bin/python"
+    assert result != "/usr/bin/python3.14"
+
+
+def test_resolve_python_executable_system_python_unaffected(monkeypatch):
+    """A genuine non-venv absolute interpreter must continue to work
+    exactly as before -- the fix only stops dereferencing symlinks, it
+    doesn't change behavior for a plain system interpreter.
+    """
+    monkeypatch.setattr(gen.sys, "executable", "/usr/bin/python3.11")
+    monkeypatch.setattr(gen.pf, "detect_os", lambda: pf.OperatingSystem.LINUX)
+    _assume_already_absolute(monkeypatch)
+
+    result = gen.resolve_python_executable()
+
+    assert result == "/usr/bin/python3.11"
+
+
+def test_resolve_python_executable_makes_relative_interpreter_absolute(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(gen.sys, "executable", "python")
+    monkeypatch.setattr(gen.pf, "detect_os", lambda: pf.OperatingSystem.LINUX)
+
+    result = gen.resolve_python_executable()
+
+    assert os.path.isabs(result)
+    assert result == os.path.abspath("python")
+
+
+def test_windows_venv_prefers_sibling_pythonw_with_spaces_in_path(monkeypatch):
+    venv_python = r"C:\Users\Test User\project\.venv\Scripts\python.exe"
+    monkeypatch.setattr(gen.sys, "executable", venv_python)
+    monkeypatch.setattr(gen.pf, "detect_os", lambda: pf.OperatingSystem.WINDOWS)
+    monkeypatch.setattr(Path, "exists", lambda self: self.name == "pythonw.exe")
+
+    result = gen.resolve_python_executable()
+
+    assert result == r"C:\Users\Test User\project\.venv\Scripts\pythonw.exe"
+
+    definition = gen.build_windows_task(python_executable=result)
+    assert definition.command_line == (
+        '"C:\\Users\\Test User\\project\\.venv\\Scripts\\pythonw.exe" -m portforge_agent agent run'
+    )
+
+
+def test_windows_pythonw_preference_never_leaves_venv_directory(monkeypatch):
+    """The pythonw.exe sibling lookup must only ever look inside the same
+    directory as the (unresolved) venv interpreter -- it must never escape
+    to a global/system Python installation.
+    """
+    venv_python = r"C:\Users\Test User\project\.venv\Scripts\python.exe"
+    monkeypatch.setattr(gen.sys, "executable", venv_python)
+    monkeypatch.setattr(gen.pf, "detect_os", lambda: pf.OperatingSystem.WINDOWS)
+
+    seen_paths = []
+
+    def fake_exists(self):
+        seen_paths.append(self)
+        return self.name == "pythonw.exe"
+
+    monkeypatch.setattr(Path, "exists", fake_exists)
+
+    gen.resolve_python_executable()
+
+    assert seen_paths, "expected the pythonw.exe sibling check to run"
+    assert all(p.parent == Path(venv_python).parent for p in seen_paths)
+
+
+def test_build_systemd_unit_preserves_venv_interpreter(monkeypatch):
+    monkeypatch.setattr(gen.sys, "executable", "/home/test/project/.venv/bin/python")
+    monkeypatch.setattr(gen.pf, "detect_os", lambda: pf.OperatingSystem.LINUX)
+    _assume_already_absolute(monkeypatch)
+
+    resolved = gen.resolve_python_executable()
+    unit = gen.build_systemd_unit(python_executable=resolved)
+
+    assert resolved == "/home/test/project/.venv/bin/python"
+    assert "ExecStart=/home/test/project/.venv/bin/python -m portforge_agent agent run" in unit
+
+
+def test_launchd_plist_preserves_venv_interpreter(monkeypatch, tmp_path):
+    monkeypatch.setattr(gen.sys, "executable", "/Users/test/project/.venv/bin/python")
+    monkeypatch.setattr(gen.pf, "detect_os", lambda: pf.OperatingSystem.MACOS)
+    _assume_already_absolute(monkeypatch)
+
+    resolved = gen.resolve_python_executable()
+    plist_dict = gen.build_launchd_plist_dict(python_executable=resolved, log_dir=tmp_path)
+
+    assert resolved == "/Users/test/project/.venv/bin/python"
+    assert plist_dict["ProgramArguments"][0] == "/Users/test/project/.venv/bin/python"
 
 
 # ---------------------------------------------------------------------------

@@ -32,6 +32,7 @@ host instead of storing one in git.
 """
 from __future__ import annotations
 
+import os
 import plistlib
 import sys
 from dataclasses import dataclass, field
@@ -53,18 +54,42 @@ SYSTEMD_UNIT_NAME = "portforge-agent.service"
 def resolve_python_executable(prefer_windowless: bool = True) -> str:
     """Absolute path to the interpreter the service definition should run.
 
-    On Windows, prefers ``pythonw.exe`` over ``python.exe`` when it exists
-    alongside the current interpreter -- pythonw.exe never attaches a
-    console window, satisfying the "avoid opening a console window where
-    practical" requirement. Every other platform (and the Windows fallback,
-    if pythonw.exe is somehow absent) uses ``sys.executable`` directly.
+    Deliberately preserves ``sys.executable`` as-is rather than calling
+    ``Path.resolve()`` on it. ``resolve()`` follows symlinks, and a
+    virtualenv's ``.venv/bin/python`` (or ``.venv/Scripts/python.exe``) is
+    almost always a symlink (POSIX) or launcher (Windows) pointing at a
+    base/system interpreter -- resolving it destroys the venv identity and
+    generates a service that runs the *system* Python, which doesn't have
+    portforge_agent (or any of the venv's other dependencies) installed.
+    The service must run in the exact same environment PortForge itself is
+    installed in, so we only make the path absolute (``os.path.abspath``,
+    which normalizes ``.``/``..`` and a relative cwd but never follows a
+    symlink) and otherwise leave it untouched.
+
+    On Windows, prefers a sibling ``pythonw.exe`` over ``python.exe`` --
+    ``Path(exe).with_name(...)`` looks in the *same directory* as the
+    (unresolved) interpreter, so this can only ever select another
+    executable inside the same venv's Scripts/ folder, never a global
+    installation. pythonw.exe never attaches a console window, satisfying
+    the "avoid opening a console window where practical" requirement.
+    Every other platform (and the Windows fallback, if pythonw.exe is
+    somehow absent) uses ``sys.executable`` directly.
+
+    Deliberately kept as plain string operations (``os.path``) rather than
+    round-tripping through ``pathlib.Path`` for the executable itself --
+    ``Path`` normalizes separators to the *host* OS's style on ``str()``,
+    which would silently rewrite e.g. a POSIX-style path's forward slashes
+    to backslashes if this ever ran (or were tested) cross-platform.
+    ``Path`` is still used for the Windows-only sibling lookup below, which
+    is inherently native-Windows-path logic already.
     """
-    exe = Path(sys.executable).resolve()
+    raw = sys.executable
+    exe = raw if os.path.isabs(raw) else os.path.abspath(raw)
     if prefer_windowless and pf.detect_os() == pf.OperatingSystem.WINDOWS:
-        windowless = exe.with_name("pythonw.exe")
-        if windowless.exists():
-            return str(windowless)
-    return str(exe)
+        windowless = str(Path(exe).with_name("pythonw.exe"))
+        if Path(windowless).exists():
+            return windowless
+    return exe
 
 
 def agent_run_args(python_executable: Optional[str] = None) -> List[str]:
