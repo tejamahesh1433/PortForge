@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-os.environ.setdefault("PORTFORGE_DB_HOST", "localhost")
+os.environ.setdefault("PORTFORGE_DB_HOST", "127.0.0.1")  # not "localhost" -- see config.py's db_host comment
 os.environ.setdefault("PORTFORGE_DB_HOST_PORT", "55432")
 os.environ.setdefault("PORTFORGE_ADMIN_BOOTSTRAP_TOKEN", "test-admin-bootstrap-token")
 

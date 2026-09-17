@@ -202,7 +202,7 @@ Every setting is an environment variable, `PORTFORGE_`-prefixed (see
 | Variable | Default | Purpose |
 |---|---|---|
 | `PORTFORGE_DATABASE_URL` | *(unset)* | Full URL; wins over the pieces below if set |
-| `PORTFORGE_DB_HOST` | `localhost` | |
+| `PORTFORGE_DB_HOST` | `127.0.0.1` | Not `localhost` -- see config.py's `db_host` comment (Docker Desktop/WSL2 IPv6-first resolution stall) |
 | `PORTFORGE_DB_HOST_PORT` | `55432` | The **host-published** Postgres port — deliberately not 5432 |
 | `PORTFORGE_DB_NAME` / `_USER` / `_PASSWORD` | `portforge` | |
 | `PORTFORGE_API_HOST_PORT` | `58000` | The API's own published port |
@@ -243,7 +243,7 @@ docker compose up -d portforge-postgres
 cd backend
 pip install -r requirements-dev.txt   # includes `-e ../agent`
 alembic upgrade head
-PORTFORGE_DB_HOST=localhost PORTFORGE_DB_HOST_PORT=55432 \
+PORTFORGE_DB_HOST=127.0.0.1 PORTFORGE_DB_HOST_PORT=55432 \
 PORTFORGE_ADMIN_BOOTSTRAP_TOKEN=<your-token> \
 uvicorn app.main:app --port 58000
 ```
@@ -274,7 +274,7 @@ created/dropped automatically — never the development database):
 docker compose up -d portforge-postgres
 cd backend
 pip install -r requirements-dev.txt
-PORTFORGE_DB_HOST=localhost PORTFORGE_DB_HOST_PORT=55432 \
+PORTFORGE_DB_HOST=127.0.0.1 PORTFORGE_DB_HOST_PORT=55432 \
 PORTFORGE_ADMIN_BOOTSTRAP_TOKEN=test-admin-bootstrap-token \
 python -m pytest tests/ -v
 ```

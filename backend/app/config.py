@@ -23,7 +23,17 @@ class Settings(BaseSettings):
     # from the individual DB_* pieces below (convenient for docker-compose
     # env files where each piece is set separately).
     database_url: str | None = None
-    db_host: str = "localhost"
+    # 127.0.0.1, not "localhost": on Docker Desktop + WSL2, "localhost"
+    # resolves IPv6-first for a brand-new connection and that lookup can
+    # stall 100+ seconds (pre-existing, previously-diagnosed networking
+    # quirk -- see docs/architecture.md and the Phase 6 physical-sync
+    # investigation). That stall doesn't just slow one request: every
+    # concurrent request needing a new pooled connection stalls the same
+    # way, and enough of them piling up during that window exhausts
+    # QueuePool's 5+10 capacity even though every session is closed
+    # correctly -- see database.py's get_db(). 127.0.0.1 skips the DNS/
+    # address-family resolution entirely and connects immediately.
+    db_host: str = "127.0.0.1"
     db_host_port: int = 55432  # PORTFORGE_DB_HOST_PORT -- see docker-compose.yml
     db_name: str = "portforge"
     db_user: str = "portforge"
