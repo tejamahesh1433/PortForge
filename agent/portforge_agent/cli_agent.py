@@ -6,6 +6,7 @@ import time
 from typing import List
 
 from . import platform as pf
+from . import service_ops
 from .central_client import CentralClient
 from .central_config import load_central_config, save_central_config, CentralConfig
 from .credentials import load_credential, save_credential
@@ -189,6 +190,61 @@ def _cmd_agent_run(args: argparse.Namespace) -> int:
     runtime.run()
     return 0
 
+def _print_service_result(result: "service_ops.ServiceOpResult", args: argparse.Namespace) -> None:
+    if args.json:
+        print(
+            json.dumps(
+                {"success": result.success, "message": result.message, "detail": result.detail},
+                indent=2,
+            )
+        )
+    else:
+        print(result.message)
+        if result.detail:
+            print(result.detail)
+
+
+def _run_service_op(op, args: argparse.Namespace) -> int:
+    """Shared plumbing for every `agent service <action>` command: run the
+    platform-dispatching operation, print its result, and turn an
+    unsupported-OS error into the same clear, actionable message and exit
+    code every other operational failure in this CLI uses (see cli.py's
+    documented exit code table -- 2 == operational/configuration error).
+    """
+    try:
+        result = op()
+    except service_ops.UnsupportedPlatformError as exc:
+        message = str(exc)
+        if args.json:
+            print(json.dumps({"success": False, "error": message}, indent=2))
+        else:
+            print(f"Error: {message}", file=sys.stderr)
+        return 2
+
+    _print_service_result(result, args)
+    return 0 if result.success else 1
+
+
+def _cmd_agent_service_install(args: argparse.Namespace) -> int:
+    return _run_service_op(service_ops.install, args)
+
+
+def _cmd_agent_service_status(args: argparse.Namespace) -> int:
+    return _run_service_op(service_ops.status, args)
+
+
+def _cmd_agent_service_start(args: argparse.Namespace) -> int:
+    return _run_service_op(service_ops.start, args)
+
+
+def _cmd_agent_service_stop(args: argparse.Namespace) -> int:
+    return _run_service_op(service_ops.stop, args)
+
+
+def _cmd_agent_service_uninstall(args: argparse.Namespace) -> int:
+    return _run_service_op(service_ops.uninstall, args)
+
+
 def add_agent_subparsers(subparsers) -> None:
     agent_parser = subparsers.add_parser(
         "agent", help="Phase 6 Agent Runtime and Synchronization"
@@ -211,3 +267,39 @@ def add_agent_subparsers(subparsers) -> None:
     
     run_parser = agent_subparsers.add_parser("run", help="Start the foreground agent runtime")
     run_parser.set_defaults(func=_cmd_agent_run)
+
+    service_parser = agent_subparsers.add_parser(
+        "service",
+        help="Manage native OS startup for 'agent run' (Windows Task Scheduler / macOS launchd / Linux systemd)",
+    )
+    service_subparsers = service_parser.add_subparsers(dest="service_command", required=True)
+
+    service_install_parser = service_subparsers.add_parser(
+        "install", help="Install (or reinstall) the native service definition for this OS"
+    )
+    service_install_parser.add_argument("--json", action="store_true")
+    service_install_parser.set_defaults(func=_cmd_agent_service_install)
+
+    service_status_parser = service_subparsers.add_parser(
+        "status", help="Show whether the native service definition is installed/running"
+    )
+    service_status_parser.add_argument("--json", action="store_true")
+    service_status_parser.set_defaults(func=_cmd_agent_service_status)
+
+    service_start_parser = service_subparsers.add_parser(
+        "start", help="Start/trigger the agent now via the native service manager"
+    )
+    service_start_parser.add_argument("--json", action="store_true")
+    service_start_parser.set_defaults(func=_cmd_agent_service_start)
+
+    service_stop_parser = service_subparsers.add_parser(
+        "stop", help="Stop the currently-running agent instance via the native service manager"
+    )
+    service_stop_parser.add_argument("--json", action="store_true")
+    service_stop_parser.set_defaults(func=_cmd_agent_service_stop)
+
+    service_uninstall_parser = service_subparsers.add_parser(
+        "uninstall", help="Remove the native service definition for this OS"
+    )
+    service_uninstall_parser.add_argument("--json", action="store_true")
+    service_uninstall_parser.set_defaults(func=_cmd_agent_service_uninstall)
