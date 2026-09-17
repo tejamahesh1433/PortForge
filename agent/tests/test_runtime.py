@@ -12,12 +12,11 @@ def test_sync_manager_capture_snapshot():
     
     with patch("portforge_agent.runtime.sync.discover_all_ports") as mock_discover, \
          patch("portforge_agent.runtime.sync.ReservationStore") as mock_store, \
-         patch("portforge_agent.runtime.sync.evaluate_all") as mock_evaluate, \
+         patch("portforge_agent.evaluate.evaluate_physical") as mock_evaluate, \
          patch("portforge_agent.runtime.sync.pf.get_host_id", return_value="test-uuid"):
-         
-        mock_discover.return_value = []
+
         mock_store.return_value.load.return_value = []
-        
+
         # Mock evaluate returning 1 port
         port = DiscoveredPort(
             port=8080,
@@ -29,18 +28,23 @@ def test_sync_manager_capture_snapshot():
             operating_system="windows",
             bind_address="0.0.0.0"
         )
-        mock_evaluate.return_value = [
-            EvaluatedPort(
-                host_id="test-uuid",
-                port=8080,
-                protocol=Protocol.TCP,
-                state=PortState.ACTIVE,
-                discovered=port
-            )
-        ]
+        # Needs timestamps for snapshot
+        from datetime import datetime, timezone
+        port.first_seen = datetime.now(timezone.utc)
+        port.last_seen = datetime.now(timezone.utc)
         
+        mock_discover.return_value = [port]
+        
+        mock_evaluate.return_value = EvaluatedPort(
+            host_id="test-uuid",
+            port=8080,
+            protocol=Protocol.TCP,
+            state=PortState.ACTIVE,
+            discovered=port
+        )
+
         snapshot = manager.capture_snapshot()
-        
+
         assert snapshot["sequence"] == 1
         assert len(snapshot["observations"]) == 1
         assert snapshot["observations"][0]["port"] == 8080

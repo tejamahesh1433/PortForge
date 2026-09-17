@@ -30,7 +30,8 @@ class SyncManager:
         """Runs the local discovery phase and builds a snapshot payload."""
         import time
         import uuid
-        
+        from ..evaluate import evaluate_physical
+
         start = time.time()
         discovered = discover_all_ports()
         
@@ -39,7 +40,7 @@ class SyncManager:
         except ReservationStorageError:
             reservations = []
             
-        evaluated = evaluate_all(pf.get_host_id(), discovered, reservations)
+        host_id = pf.get_host_id()
         
         self.state.sequence_id += 1
         
@@ -50,13 +51,9 @@ class SyncManager:
             "observations": []
         }
         
-        for e in evaluated:
-            port = e.discovered
-            # Only include actively discovered or conflicting ports in observation sync to central.
-            # Pure reservations without a listener are usually handled by reservation sync.
-            if port is None:
-                continue
-                
+        for port in discovered:
+            e = evaluate_physical(host_id, port, reservations)
+            
             snapshot["observations"].append({
                 "port": port.port,
                 "protocol": port.protocol.value,

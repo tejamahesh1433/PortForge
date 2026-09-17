@@ -180,3 +180,21 @@ def evaluate_all(
         r = find_reservation(reservations, host_id, port, protocol)
         results.append(evaluate_port(host_id, port, protocol, d, r))
     return results
+
+
+def evaluate_physical(
+    host_id: str,
+    discovered: DiscoveredPort,
+    reservations: List[Reservation],
+) -> EvaluatedPort:
+    """Evaluate a specific physical discovered binding against reservations.
+    Unlike evaluate_all(), this does not collapse logically identical
+    (protocol, port) bindings. Used for Phase 6 physical snapshots where
+    every unique address/binding must be preserved.
+    """
+    logical_port = discovered.host_port if discovered.host_port is not None else discovered.port
+    reservation = find_reservation(
+        reservations, host_id, logical_port, discovered.protocol, discovered.bind_address
+    )
+    return evaluate_port(host_id, logical_port, discovered.protocol, discovered, reservation)
+
