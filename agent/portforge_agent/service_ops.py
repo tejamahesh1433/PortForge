@@ -25,12 +25,20 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 from dataclasses import dataclass
 from typing import List, Optional
 
 from . import paths
 from . import platform as pf
 from . import service_gen as gen
+
+# Seconds to wait between a controlled bootout and the follow-up bootstrap
+# when reinstalling over an already-registered (possibly running) LaunchAgent.
+# launchd needs this time to fully drain the process before it will accept a
+# new bootstrap for the same label; without the pause the bootstrap returns
+# errno 5 (Input/output error) non-deterministically.
+_LAUNCHD_BOOTOUT_SETTLE_SECS: float = 2.0
 
 
 @dataclass
@@ -141,6 +149,19 @@ def _launchd_service_target() -> str:
     return f"{_launchd_domain()}/{gen.LAUNCHD_LABEL}"
 
 
+def _launchd_is_registered() -> bool:
+    """Return True if com.portforge.agent is currently known to launchd.
+
+    `launchctl print <target>` exits 0 when the service is registered in
+    the gui/<uid> domain (whether running or intentionally stopped) and
+    non-zero when it is not registered at all.  We use this as the
+    single, authoritative registration probe rather than inspecting stdout
+    text, which varies between macOS versions.
+    """
+    result = _run(["launchctl", "print", _launchd_service_target()])
+    return result.returncode == 0
+
+
 def _install_macos() -> ServiceOpResult:
     log_dir = paths.data_dir() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -149,12 +170,38 @@ def _install_macos() -> ServiceOpResult:
     plist_path.parent.mkdir(parents=True, exist_ok=True)
     plist_path.write_bytes(gen.build_launchd_plist_bytes(log_dir=log_dir))
 
-    # Best-effort unload of any previously-registered copy first -- makes
-    # install idempotent, since `bootstrap` refuses to load a label that's
-    # already registered even after the plist file on disk is overwritten.
-    # Its own result is intentionally discarded: failing here just means
-    # nothing was loaded yet, which is fine.
-    _run(["launchctl", "bootout", _launchd_service_target()])
+    # Determine whether com.portforge.agent is currently registered in
+    # launchd's gui/<uid> domain.  `launchctl print <target>` exits 0 when
+    # the service is known to launchd (running *or* stopped but still
+    # bootstrapped) and non-zero when it isn't registered at all.
+    #
+    # We use this state rather than always doing a blind bootout+bootstrap
+    # because:
+    #   • bootstrap refuses with I/O error (5) if the label is already
+    #     registered -- even if we just wrote a fresh plist to disk.
+    #   • bootout of a running service leaves launchd in an intermediate
+    #     "teardown" state; issuing bootstrap immediately afterwards can
+    #     race and produce the same I/O error.
+    #   • The safest idempotent strategy is:
+    #       - If NOT registered  → bootstrap normally.
+    #       - If registered      → bootout (wait for launchd to drain) then
+    #                              bootstrap to reload the updated plist.
+    already_registered = _launchd_is_registered()
+
+    if already_registered:
+        # Controlled removal of the old registration so we can reload.
+        bootout = _run(["launchctl", "bootout", _launchd_service_target()])
+        if bootout.returncode != 0:
+            # bootout failed for a reason other than "not registered" --
+            # surface it rather than silently continuing into a broken state.
+            combined = (bootout.stderr or bootout.stdout or "").lower()
+            if "could not find" not in combined and "no such process" not in combined:
+                return ServiceOpResult(
+                    False,
+                    "Failed to remove existing LaunchAgent registration before reinstall.",
+                    detail=(bootout.stderr or bootout.stdout).strip(),
+                    returncode=bootout.returncode,
+                )
 
     result = _run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)])
     if result.returncode == 0:
@@ -162,8 +209,23 @@ def _install_macos() -> ServiceOpResult:
             True, f"LaunchAgent '{gen.LAUNCHD_LABEL}' installed at {plist_path}.",
             detail=result.stdout.strip(),
         )
+
+    # errno 5 / I/O error is the launchd drain-race: the old process has been
+    # signalled but launchd has not yet released the label registration.  One
+    # retry after a short settle window is deterministic and sufficient.
+    combined = (result.stderr or result.stdout or "").lower()
+    if result.returncode == 5 or "input/output error" in combined:
+        time.sleep(_LAUNCHD_BOOTOUT_SETTLE_SECS)
+        result = _run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)])
+        if result.returncode == 0:
+            return ServiceOpResult(
+                True, f"LaunchAgent '{gen.LAUNCHD_LABEL}' installed at {plist_path}.",
+                detail=result.stdout.strip(),
+            )
+
     return ServiceOpResult(
-        False, "Failed to bootstrap LaunchAgent.", detail=(result.stderr or result.stdout).strip(),
+        False, "Failed to bootstrap LaunchAgent.",
+        detail=(result.stderr or result.stdout).strip(),
         returncode=result.returncode,
     )
 

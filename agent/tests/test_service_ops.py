@@ -126,18 +126,48 @@ def test_uninstall_windows_when_already_absent_does_not_error_twice(monkeypatch)
 # macOS: launchd
 # ---------------------------------------------------------------------------
 
+# Helper: build a fake _run that returns `not_registered_rc` for the initial
+# "print" probe and `registered_rc` for every subsequent call. Used to
+# simulate the two main registration states without touching real launchd.
 
-def test_install_macos_boots_out_stale_copy_then_bootstraps(monkeypatch, tmp_path):
+def _make_probe_run(monkeypatch, *, probe_rc, subsequent_rc=0):
+    """Patch service_ops._run so the first call (the registration probe)
+    returns `probe_rc`, and all subsequent calls return `subsequent_rc`."""
+    call_count = [0]
+
+    def fake_run(args, timeout=15.0):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return _cp(probe_rc)
+        return _cp(subsequent_rc)
+
+    monkeypatch.setattr(service_ops, "_run", fake_run)
+    return call_count
+
+
+def _setup_macos(monkeypatch, tmp_path):
+    """Common monkeypatching for macOS install tests."""
     monkeypatch.setattr(pf, "detect_os", lambda: pf.OperatingSystem.MACOS)
     monkeypatch.setattr(service_ops.os, "getuid", lambda: 501, raising=False)
     monkeypatch.setattr(service_ops.paths, "data_dir", lambda: tmp_path)
-    plist_path = tmp_path / "LaunchAgents" / f"{gen.LAUNCHD_LABEL}.plist"
+    plist_path = tmp_path / "Library" / "LaunchAgents" / f"{gen.LAUNCHD_LABEL}.plist"
     monkeypatch.setattr(gen, "launchd_plist_path", lambda: plist_path)
+    return plist_path
+
+
+# 1. First install when not registered
+def test_install_macos_first_install_not_registered(monkeypatch, tmp_path):
+    """When the service is not registered: probe returns non-zero, skip
+    bootout, bootstrap directly."""
+    plist_path = _setup_macos(monkeypatch, tmp_path)
 
     calls = []
 
     def fake_run(args, timeout=15.0):
-        calls.append(args)
+        calls.append(list(args))
+        # probe: print → non-zero (not registered); bootstrap → 0
+        if args[0:2] == ["launchctl", "print"]:
+            return _cp(1, "", "Could not find service")
         return _cp(0)
 
     monkeypatch.setattr(service_ops, "_run", fake_run)
@@ -145,10 +175,212 @@ def test_install_macos_boots_out_stale_copy_then_bootstraps(monkeypatch, tmp_pat
     result = service_ops.install()
 
     assert result.success is True
-    assert calls[0][:2] == ["launchctl", "bootout"]
-    assert calls[1][:2] == ["launchctl", "bootstrap"]
-    assert calls[1][2] == "gui/501"
     assert plist_path.exists()
+    cmds = [c[:2] for c in calls]
+    assert ["launchctl", "print"] in cmds       # registration probe
+    assert ["launchctl", "bootout"] not in cmds  # skipped when not registered
+    assert ["launchctl", "bootstrap"] in cmds
+
+
+# 2. Repeated install while registered and running
+def test_install_macos_idempotent_while_registered_running(monkeypatch, tmp_path):
+    """When the service IS registered (running): probe returns 0, so we do
+    a controlled bootout then bootstrap.  Must succeed and end healthy."""
+    plist_path = _setup_macos(monkeypatch, tmp_path)
+
+    calls = []
+
+    def fake_run(args, timeout=15.0):
+        calls.append(list(args))
+        return _cp(0)   # probe=0 (registered), bootout=0, bootstrap=0
+
+    monkeypatch.setattr(service_ops, "_run", fake_run)
+
+    result = service_ops.install()
+
+    assert result.success is True
+    assert plist_path.exists()
+    cmds = [c[:2] for c in calls]
+    assert ["launchctl", "print"] in cmds     # probe
+    assert ["launchctl", "bootout"] in cmds   # controlled removal
+    assert ["launchctl", "bootstrap"] in cmds # re-register
+
+
+# 3. Repeated install while registered but intentionally stopped
+def test_install_macos_idempotent_while_registered_stopped(monkeypatch, tmp_path):
+    """When the service is registered but stopped: `launchctl print` still
+    returns 0 (service is known to launchd), so we still go through the
+    controlled bootout+bootstrap cycle."""
+    plist_path = _setup_macos(monkeypatch, tmp_path)
+
+    calls = []
+
+    def fake_run(args, timeout=15.0):
+        calls.append(list(args))
+        # print → 0 (registered/stopped); bootout → 0; bootstrap → 0
+        return _cp(0)
+
+    monkeypatch.setattr(service_ops, "_run", fake_run)
+
+    result = service_ops.install()
+
+    assert result.success is True
+    cmds = [c[:2] for c in calls]
+    assert ["launchctl", "bootout"] in cmds
+    assert ["launchctl", "bootstrap"] in cmds
+
+
+# 4. Bootstrap failure that is NOT an already-registered condition is surfaced
+def test_install_macos_unrecoverable_bootstrap_failure_surfaced(monkeypatch, tmp_path):
+    """A real bootstrap failure (not an already-registered race) must be
+    returned as ServiceOpResult(success=False), not swallowed."""
+    plist_path = _setup_macos(monkeypatch, tmp_path)
+
+    def fake_run(args, timeout=15.0):
+        if args[0:2] == ["launchctl", "print"]:
+            return _cp(1, "", "Could not find service")   # not registered
+        if args[0:2] == ["launchctl", "bootstrap"]:
+            return _cp(5, "", "Bootstrap failed: 5: Input/output error")
+        return _cp(0)
+
+    monkeypatch.setattr(service_ops, "_run", fake_run)
+    monkeypatch.setattr(service_ops.time, "sleep", lambda _: None)
+
+    result = service_ops.install()
+
+    assert result.success is False
+    assert result.returncode == 5
+    assert "bootstrap" in result.message.lower() or "failed" in result.message.lower()
+
+
+# 4b. Bootstrap errno-5 drain-race: retry succeeds
+def test_install_macos_bootstrap_io_error_retries_and_succeeds(monkeypatch, tmp_path):
+    """When bootstrap returns errno 5 (I/O error / drain race) the first time,
+    install must wait then retry once.  If the retry succeeds, the result
+    must be ServiceOpResult(success=True)."""
+    plist_path = _setup_macos(monkeypatch, tmp_path)
+    bootstrap_calls = [0]
+
+    def fake_run(args, timeout=15.0):
+        if args[0:2] == ["launchctl", "print"]:
+            return _cp(1, "", "Could not find service")   # not registered
+        if args[0:2] == ["launchctl", "bootstrap"]:
+            bootstrap_calls[0] += 1
+            if bootstrap_calls[0] == 1:
+                return _cp(5, "", "Bootstrap failed: 5: Input/output error")
+            return _cp(0)   # retry succeeds
+        return _cp(0)
+
+    monkeypatch.setattr(service_ops, "_run", fake_run)
+    slept = [0.0]
+    monkeypatch.setattr(service_ops.time, "sleep", lambda s: slept.__setitem__(0, s))
+
+    result = service_ops.install()
+
+    assert result.success is True
+    assert bootstrap_calls[0] == 2   # two bootstrap attempts
+    assert slept[0] == service_ops._LAUNCHD_BOOTOUT_SETTLE_SECS
+
+
+# 5. Real bootout failure (not a benign "not found") is surfaced
+def test_install_macos_unrecoverable_bootout_failure_surfaced(monkeypatch, tmp_path):
+    """When bootout returns non-zero for a real (non-trivial) reason, the
+    install must abort and report the failure rather than blindly proceeding
+    to bootstrap."""
+    plist_path = _setup_macos(monkeypatch, tmp_path)
+
+    def fake_run(args, timeout=15.0):
+        if args[0:2] == ["launchctl", "print"]:
+            return _cp(0)   # service IS registered
+        if args[0:2] == ["launchctl", "bootout"]:
+            return _cp(5, "", "Bootout failed: permission denied")
+        return _cp(0)
+
+    monkeypatch.setattr(service_ops, "_run", fake_run)
+
+    result = service_ops.install()
+
+    assert result.success is False
+    assert "registration" in result.message.lower() or "reinstall" in result.message.lower()
+
+
+# 6. Plist remains structurally valid after reinstall
+def test_install_macos_plist_valid_after_reinstall(monkeypatch, tmp_path):
+    """The written plist must be parse-able by plistlib with correct structure."""
+    import plistlib
+    plist_path = _setup_macos(monkeypatch, tmp_path)
+
+    def fake_run(args, timeout=15.0):
+        return _cp(0)
+
+    monkeypatch.setattr(service_ops, "_run", fake_run)
+
+    service_ops.install()
+
+    assert plist_path.exists()
+    d = plistlib.loads(plist_path.read_bytes())
+    assert d["Label"] == gen.LAUNCHD_LABEL
+    assert d["RunAtLoad"] is True
+    assert d["KeepAlive"] == {"SuccessfulExit": False}
+    assert "ProgramArguments" in d
+    assert "StandardOutPath" in d
+    assert "StandardErrorPath" in d
+
+
+# 7. No duplicate plist file created
+def test_install_macos_no_duplicate_plist(monkeypatch, tmp_path):
+    """Repeated installs must leave exactly one plist, not multiple copies."""
+    plist_path = _setup_macos(monkeypatch, tmp_path)
+
+    def fake_run(args, timeout=15.0):
+        return _cp(0)
+
+    monkeypatch.setattr(service_ops, "_run", fake_run)
+
+    service_ops.install()
+    service_ops.install()
+    service_ops.install()
+
+    # Only one file matching the label should exist under LaunchAgents
+    la_dir = plist_path.parent
+    portforge_plists = list(la_dir.glob("*portforge*.plist"))
+    assert len(portforge_plists) == 1
+    assert portforge_plists[0] == plist_path
+
+
+# 8. Venv interpreter is preserved in ProgramArguments
+def test_install_macos_venv_interpreter_preserved(monkeypatch, tmp_path):
+    """ProgramArguments must start with the venv python, not a system one."""
+    import plistlib
+    plist_path = _setup_macos(monkeypatch, tmp_path)
+    fake_exe = "/Users/test/Projects/PortForge/.venv/bin/python"
+    monkeypatch.setattr(gen, "resolve_python_executable", lambda: fake_exe)
+
+    def fake_run(args, timeout=15.0):
+        return _cp(0)
+
+    monkeypatch.setattr(service_ops, "_run", fake_run)
+
+    service_ops.install()
+
+    d = plistlib.loads(plist_path.read_bytes())
+    assert d["ProgramArguments"][0] == fake_exe
+    assert d["ProgramArguments"][1:] == ["-m", "portforge_agent", "agent", "run"]
+
+
+# 9. Multiple successive installs all succeed (install → install → install)
+def test_install_macos_repeated_installs_all_succeed(monkeypatch, tmp_path):
+    """Running service install three times in a row must all return success."""
+    _setup_macos(monkeypatch, tmp_path)
+
+    def fake_run(args, timeout=15.0):
+        return _cp(0)
+
+    monkeypatch.setattr(service_ops, "_run", fake_run)
+
+    results = [service_ops.install() for _ in range(3)]
+    assert all(r.success for r in results)
+
 
 
 def test_status_macos_target_construction(monkeypatch):
