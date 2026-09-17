@@ -115,3 +115,9 @@ class SnapshotResult(ApiModel):
     appeared: int = 0
     changed: int = 0
     disappeared: int = 0
+    # How many of `observations_processed` were collapsed into an
+    # already-counted canonical binding identity (host+port+protocol+
+    # bind_address) -- see ingestion_service.py's "Duplicate-binding
+    # canonicalization". Lets a caller tell "raw observations != canonical
+    # bindings" apart from actual data loss.
+    duplicates_merged: int = 0

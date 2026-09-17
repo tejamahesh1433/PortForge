@@ -61,6 +61,53 @@ the session uncommitted; the caller (api/agents.py) lets it propagate,
 FastAPI's request-scoped session is rolled back on the way out, and
 nothing is left half-applied. See tests/test_ingestion_service.py for a
 rollback test that simulates a failure partway through.
+
+## Duplicate-binding canonicalization
+
+`current_port_observations` has exactly one row per (host, port,
+protocol, bind_address) -- `uq_current_port_binding`. A single incoming
+snapshot can legitimately contain more than one raw observation for that
+same identity (physically reproduced on NTMKEYA: two distinct processes
+both bound to UDP 5353/`::` for mDNS via SO_REUSEADDR -- entirely valid
+at the OS level, but the schema can only persist one current row for it).
+Before this identity is used for anything else, `_canonicalize_observations()`
+collapses each group of same-identity observations into one canonical
+observation via `_merge_observation_group()`, deterministically and
+independent of input order (see `_observation_sort_key()`): source
+authority mirrors the agent's own established `merge_native_and_docker()`
+precedent (docker > process/system), then detection confidence
+(`Confidence.HIGH > ... > UNKNOWN`), then richness, then a fully
+content-derived tiebreak. Remaining metadata is backfilled from runner-up
+observations in three COHERENT groups (process identity, container
+identity, detection result) rather than field-by-field, so a process's
+pid is never paired with a different process's container id.
+
+This is a genuine, documented information reduction, not a workaround:
+when two truly different physical listeners share one binding identity,
+only the winning observation's process/container metadata survives as
+the current row -- the schema has no way to represent two owners for one
+(host, port, protocol, bind_address) row. `IngestionResult.duplicates_merged`
+reports how many raw observations were absorbed this way, so a caller can
+tell "N raw physical observations, M canonical binding identities" apart
+from actual data loss.
+
+## Concurrent same-host ingestion
+
+Two overlapping requests for the SAME host both reading `current_rows`
+under READ COMMITTED isolation, before either commits, could previously
+both decide the same binding was "new" and collide on
+`uq_current_port_binding` at commit -- a second, distinct bug from the
+same-request duplicate problem above (that one reproduces with zero
+concurrency; this one only reproduces with two truly overlapping
+transactions). `ingest_snapshot()` now opens with a PostgreSQL
+transaction-scoped advisory lock keyed by `host_id`
+(`_acquire_host_ingestion_lock()`) -- automatically released on
+commit/rollback, no manual unlock, and scoped per-host so concurrent
+traffic for *different* hosts is entirely unaffected (no new QueuePool
+pressure). The second overlapping request simply waits for the first to
+finish, then re-reads fully-committed state, so the existing
+`observed_at` staleness check above -- unchanged -- correctly decides
+which snapshot wins instead of both racing to insert.
 """
 from __future__ import annotations
 
@@ -69,7 +116,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from ..models.port_observation import CurrentPortObservation, PortObservationEvent
@@ -112,6 +159,7 @@ class IngestionResult:
     appeared: int
     changed: int
     disappeared: int
+    duplicates_merged: int = 0
 
 
 def _binding_key(obs) -> _BindingKey:
@@ -126,6 +174,145 @@ def _meaningfully_changed(current: CurrentPortObservation, incoming: Observation
         if current_value != incoming_value:
             return True
     return False
+
+
+# --- Duplicate-binding canonicalization -- see module docstring ------------
+
+_SOURCE_RANK = {"docker": 2, "process": 1, "system": 1, "reservation": 0}
+_CONFIDENCE_RANK = {"high": 3, "medium": 2, "low": 1, "unknown": 0}
+
+# Coherent field groups backfilled together (never field-by-field) so a
+# runner-up observation's process identity is never mixed with a
+# different runner-up's container identity into one incoherent record.
+_PROCESS_FIELDS: Tuple[str, ...] = ("pid", "process_name", "process_path", "working_directory")
+_CONTAINER_FIELDS: Tuple[str, ...] = (
+    "container_id",
+    "container_name",
+    "container_image",
+    "container_port",
+    "docker_compose_project",
+    "service_name",
+)
+_DETECTION_FIELDS: Tuple[str, ...] = ("purpose", "category", "detection_confidence")
+_INDEPENDENT_BACKFILL_FIELDS: Tuple[str, ...] = ("project_name",)
+
+
+def _source_rank(source) -> int:
+    value = source.value if hasattr(source, "value") else source
+    return _SOURCE_RANK.get(value, 0)
+
+
+def _confidence_rank(confidence) -> int:
+    if not confidence:
+        return 0
+    value = confidence.value if hasattr(confidence, "value") else confidence
+    return _CONFIDENCE_RANK.get(str(value).lower(), 0)
+
+
+def _observation_sort_key(obs: ObservationIn) -> tuple:
+    """Higher is "more authoritative" -- picks which of several incoming
+    observations for the SAME Central binding identity becomes canonical.
+    Every component is derived from the observation's own content, never
+    its position in the incoming list, so the result never depends on
+    submission order. See the module docstring's "Duplicate-binding
+    canonicalization" section for the full rationale.
+    """
+    return (
+        _source_rank(obs.source),
+        _confidence_rank(obs.detection_confidence),
+        1 if obs.process_name else 0,
+        1 if obs.container_id else 0,
+        1 if obs.project_name else 0,
+        1 if obs.purpose else 0,
+        # Final tiebreak: content only, never list position -- guarantees
+        # the same result regardless of incoming observation order.
+        obs.process_name or "",
+        obs.container_id or "",
+        obs.container_name or "",
+        obs.project_name or "",
+        obs.category or "",
+        obs.pid or 0,
+    )
+
+
+def _group_has_value(obs: ObservationIn, fields: Tuple[str, ...]) -> bool:
+    return any(getattr(obs, f, None) for f in fields)
+
+
+def _copy_field_group(target: ObservationIn, source: ObservationIn, fields: Tuple[str, ...]) -> None:
+    for f in fields:
+        setattr(target, f, getattr(source, f, None))
+
+
+def _merge_observation_group(group: List[ObservationIn]) -> ObservationIn:
+    """Collapses >=2 incoming observations that share one Central binding
+    identity into a single canonical observation. See the module
+    docstring's "Duplicate-binding canonicalization" section.
+    """
+    ranked = sorted(group, key=_observation_sort_key, reverse=True)
+    primary = ranked[0]
+    merged = primary.model_copy(deep=True)
+
+    if not _group_has_value(merged, _PROCESS_FIELDS):
+        for candidate in ranked[1:]:
+            if _group_has_value(candidate, _PROCESS_FIELDS):
+                _copy_field_group(merged, candidate, _PROCESS_FIELDS)
+                break
+
+    if not _group_has_value(merged, _CONTAINER_FIELDS):
+        for candidate in ranked[1:]:
+            if _group_has_value(candidate, _CONTAINER_FIELDS):
+                _copy_field_group(merged, candidate, _CONTAINER_FIELDS)
+                break
+
+    if not _group_has_value(merged, _DETECTION_FIELDS):
+        for candidate in ranked[1:]:
+            if _group_has_value(candidate, _DETECTION_FIELDS):
+                _copy_field_group(merged, candidate, _DETECTION_FIELDS)
+                break
+
+    for f in _INDEPENDENT_BACKFILL_FIELDS:
+        if not getattr(merged, f, None):
+            for candidate in ranked[1:]:
+                value = getattr(candidate, f, None)
+                if value:
+                    setattr(merged, f, value)
+                    break
+
+    merged.first_seen = min(o.first_seen for o in group)
+    merged.last_seen = max(o.last_seen for o in group)
+
+    return merged
+
+
+def _canonicalize_observations(observations: List[ObservationIn]) -> "Tuple[List[ObservationIn], int]":
+    """Collapses the incoming observation list to exactly one entry per
+    Central binding identity (host+port+protocol+bind_address). Returns
+    (canonical_list, duplicates_merged); duplicates_merged is how many raw
+    observations were absorbed into an existing canonical entry (0 when
+    every incoming binding identity was already unique).
+    """
+    groups: Dict[_BindingKey, List[ObservationIn]] = {}
+    order: List[_BindingKey] = []
+    for obs in observations:
+        key = _binding_key(obs)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(obs)
+
+    canonical: List[ObservationIn] = [
+        groups[key][0] if len(groups[key]) == 1 else _merge_observation_group(groups[key]) for key in order
+    ]
+    return canonical, len(observations) - len(canonical)
+
+
+def _acquire_host_ingestion_lock(db: Session, host_id: uuid.UUID) -> None:
+    """Serializes concurrent ingest_snapshot() calls for the SAME host_id
+    via a transaction-scoped PostgreSQL advisory lock. See the module
+    docstring's "Concurrent same-host ingestion" section.
+    """
+    db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:host_id))"), {"host_id": str(host_id)})
 
 
 def ingest_snapshot(
@@ -144,10 +331,15 @@ def ingest_snapshot(
             f"Snapshot has {len(observations)} observations, exceeding the configured limit of {max_batch_size}."
         )
 
+    # Serializes concurrent submissions for THIS host only -- see
+    # "Concurrent same-host ingestion" above. Acquired before any read so
+    # a second overlapping request always sees fully-committed state.
+    _acquire_host_ingestion_lock(db, host_id)
+
     # Idempotent replay: this exact scan was already accepted.
     existing_scan = db.get(Scan, scan_id)
     if existing_scan is not None:
-        return IngestionResult(scan_id, True, "duplicate scan_id (already processed)", 0, 0, 0, 0)
+        return IngestionResult(scan_id, True, "duplicate scan_id (already processed)", 0, 0, 0, 0, 0)
 
     host_repo = HostRepository(db)
     host = host_repo.get(host_id)
@@ -160,15 +352,20 @@ def ingest_snapshot(
             f"scan's observed_at={host.last_scan_observed_at.isoformat()}; rejected as stale/out-of-order."
         )
 
+    # Collapse any duplicate binding identities WITHIN this snapshot before
+    # touching the DB at all -- see "Duplicate-binding canonicalization"
+    # above. Everything below operates on the canonical list only.
+    canonical_observations, duplicates_merged = _canonicalize_observations(observations)
+
     port_repo = PortRepository(db)
     current_rows = {
         (row.port, row.protocol.value, row.bind_address): row for row in port_repo.list_current_for_host(host_id)
     }
-    incoming_keys = {_binding_key(obs) for obs in observations}
+    incoming_keys = {_binding_key(obs) for obs in canonical_observations}
 
     appeared = changed = disappeared = 0
 
-    for obs in observations:
+    for obs in canonical_observations:
         key = _binding_key(obs)
         existing = current_rows.get(key)
 
@@ -297,4 +494,5 @@ def ingest_snapshot(
         appeared=appeared,
         changed=changed,
         disappeared=disappeared,
+        duplicates_merged=duplicates_merged,
     )

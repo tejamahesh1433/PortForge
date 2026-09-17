@@ -127,4 +127,5 @@ def submit_observations(
         appeared=result.appeared,
         changed=result.changed,
         disappeared=result.disappeared,
+        duplicates_merged=result.duplicates_merged,
     )
