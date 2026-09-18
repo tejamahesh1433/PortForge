@@ -38,16 +38,44 @@ def _windows_no_window_kwargs() -> Dict[str, Any]:
     Needed regardless of whether the calling process is pythonw.exe or
     python.exe -- pythonw.exe merely lacks a console of its own; it does
     not, by itself, stop Windows from allocating a new one for a
-    console-subsystem child process. Two complementary mechanisms, kept
-    together for the widest compatibility:
+    console-subsystem child process.
 
-    - `creationflags=CREATE_NO_WINDOW`: the documented, primary way to
-      tell CreateProcess() never to allocate a console for the child at
-      all.
-    - `STARTUPINFO` with `STARTF_USESHOWWINDOW` / `wShowWindow=SW_HIDE`:
-      belt-and-suspenders for child processes/wrappers that inspect the
-      startup info's show-window hint rather than relying solely on the
-      absence of a console.
+    Physical investigation on NTMKEYA found that a single obvious flag is
+    NOT enough for the actual deployment target (a process launched by
+    Task Scheduler), even though it looks sufficient when tested from an
+    interactive shell:
+
+    - `creationflags=CREATE_NO_WINDOW` alone: zero console flashes across
+      30 real `docker.exe` calls spawned from a pythonw.exe process
+      started interactively (`Start-Process`) -- looks like a complete
+      fix. But the exact same code, same interpreter, same kwargs, run
+      from a pythonw.exe process started by Task Scheduler instead
+      (verified with a temporary scheduled task running the identical
+      script, comparing real `conhost.exe` process counts before/after)
+      still flashed a console for every call: CREATE_NO_WINDOW alone
+      only suppresses a *newly allocated* console; it does not by itself
+      detach the child from a console still reachable through the
+      parent's own inheritance chain, which is what a Task-Scheduler-
+      launched process apparently still carries even though pythonw.exe
+      itself never displays one.
+    - `creationflags |= DETACHED_PROCESS`: explicitly detaches the child
+      from any console in that inheritance chain. Reduced (but did not
+      fully eliminate) the same Task-Scheduler-launched reproduction.
+    - `stdin=subprocess.DEVNULL`: the remaining gap. `capture_output=True`
+      redirects stdout/stderr to pipes but leaves stdin inherited from
+      the parent; an inherited stdin handle tied to a console was enough
+      to make Windows allocate one for the child despite both flags
+      above. None of PortForge's subprocess calls (discovery commands,
+      native service-manager calls) ever need to feed a child stdin, so
+      this has no behavioral cost.
+
+    All three together were re-verified with the same before/after
+    `conhost.exe`-count methodology, three separate runs, from a real
+    Task-Scheduler-launched process: zero new consoles every time.
+
+    - `STARTUPINFO` with `STARTF_USESHOWWINDOW` / `wShowWindow=SW_HIDE`
+      is also included, belt-and-suspenders, for any child/wrapper that
+      inspects the startup info's show-window hint directly.
 
     Only ever called after confirming `_IS_WINDOWS` -- every attribute
     referenced here (`subprocess.CREATE_NO_WINDOW`, `STARTUPINFO`, ...)
@@ -56,7 +84,8 @@ def _windows_no_window_kwargs() -> Dict[str, Any]:
     startupinfo = subprocess.STARTUPINFO()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startupinfo.wShowWindow = subprocess.SW_HIDE
-    return {"creationflags": subprocess.CREATE_NO_WINDOW, "startupinfo": startupinfo}
+    creationflags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
+    return {"creationflags": creationflags, "startupinfo": startupinfo, "stdin": subprocess.DEVNULL}
 
 
 def run_subprocess(

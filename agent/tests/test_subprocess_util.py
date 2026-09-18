@@ -42,7 +42,49 @@ def test_windows_includes_create_no_window(monkeypatch):
 
     subprocess_util.run_subprocess(["docker", "version"])
 
-    assert captured["kwargs"]["creationflags"] == subprocess.CREATE_NO_WINDOW
+    assert captured["kwargs"]["creationflags"] & subprocess.CREATE_NO_WINDOW
+
+
+def test_windows_includes_detached_process(monkeypatch):
+    """CREATE_NO_WINDOW alone was proven insufficient under a real
+    Task-Scheduler-launched parent process (physically reproduced on
+    NTMKEYA -- see _windows_no_window_kwargs's docstring): the child
+    still inherited a console through the parent's own inheritance
+    chain. DETACHED_PROCESS is what actually detaches it.
+    """
+    monkeypatch.setattr(subprocess_util, "_IS_WINDOWS", True)
+    captured = {}
+
+    def fake_run(args, **kwargs):
+        captured["kwargs"] = kwargs
+        return _cp()
+
+    monkeypatch.setattr(subprocess_util.subprocess, "run", fake_run)
+
+    subprocess_util.run_subprocess(["docker", "version"])
+
+    assert captured["kwargs"]["creationflags"] & subprocess.DETACHED_PROCESS
+
+
+def test_windows_stdin_is_devnull(monkeypatch):
+    """The second physically-required fix beyond the creation flags: an
+    inherited stdin handle tied to a console was, on its own, enough to
+    make Windows allocate one for the child even with both creation
+    flags set. None of PortForge's subprocess calls ever need to feed a
+    child stdin.
+    """
+    monkeypatch.setattr(subprocess_util, "_IS_WINDOWS", True)
+    captured = {}
+
+    def fake_run(args, **kwargs):
+        captured["kwargs"] = kwargs
+        return _cp()
+
+    monkeypatch.setattr(subprocess_util.subprocess, "run", fake_run)
+
+    subprocess_util.run_subprocess(["docker", "version"])
+
+    assert captured["kwargs"]["stdin"] == subprocess.DEVNULL
 
 
 def test_windows_includes_startupinfo_hidden(monkeypatch):
@@ -82,7 +124,7 @@ def test_windows_docker_version_probe_uses_safe_execution_path(monkeypatch):
     run_command(["docker.EXE", "version", "--format", "{{.Server.Version}}"])
 
     assert captured["args"] == ["docker.EXE", "version", "--format", "{{.Server.Version}}"]
-    assert captured["kwargs"]["creationflags"] == subprocess.CREATE_NO_WINDOW
+    assert captured["kwargs"]["creationflags"] & subprocess.CREATE_NO_WINDOW
 
 
 def test_windows_docker_ps_discovery_uses_safe_execution_path(monkeypatch):
@@ -104,7 +146,7 @@ def test_windows_docker_ps_discovery_uses_safe_execution_path(monkeypatch):
     run_command(["docker.EXE", "ps", "-q"])
 
     assert captured["args"] == ["docker.EXE", "ps", "-q"]
-    assert captured["kwargs"]["creationflags"] == subprocess.CREATE_NO_WINDOW
+    assert captured["kwargs"]["creationflags"] & subprocess.CREATE_NO_WINDOW
 
 
 def test_windows_service_ops_calls_use_safe_execution_path(monkeypatch):
@@ -127,7 +169,7 @@ def test_windows_service_ops_calls_use_safe_execution_path(monkeypatch):
 
     service_ops._run(["schtasks", "/Query", "/TN", "PortForge Agent"])
 
-    assert captured["kwargs"]["creationflags"] == subprocess.CREATE_NO_WINDOW
+    assert captured["kwargs"]["creationflags"] & subprocess.CREATE_NO_WINDOW
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +309,7 @@ def test_caller_kwargs_pass_through_on_windows(monkeypatch):
     assert captured["kwargs"]["capture_output"] is True
     assert captured["kwargs"]["text"] is True
     assert captured["kwargs"]["check"] is False
-    assert captured["kwargs"]["creationflags"] == subprocess.CREATE_NO_WINDOW
+    assert captured["kwargs"]["creationflags"] & subprocess.CREATE_NO_WINDOW
 
 
 def test_caller_supplied_windows_kwargs_win_over_defaults(monkeypatch):
