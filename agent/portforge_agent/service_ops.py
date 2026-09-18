@@ -32,6 +32,7 @@ from typing import List, Optional
 from . import paths
 from . import platform as pf
 from . import service_gen as gen
+from .subprocess_util import run_subprocess
 
 # Seconds to wait between a controlled bootout and the follow-up bootstrap
 # when reinstalling over an already-registered (possibly running) LaunchAgent.
@@ -61,8 +62,12 @@ def _run(args: List[str], timeout: float = 15.0) -> subprocess.CompletedProcess:
     Deliberately thin (no CollectorError-style exception translation) so
     tests can `patch("portforge_agent.service_ops._run")` once per test and
     control returncode/stdout/stderr directly for every scenario.
+
+    Goes through subprocess_util.run_subprocess so schtasks.exe/launchctl/
+    systemctl calls never flash a console window on Windows either --
+    same centralized suppression as collectors/base.py's run_command.
     """
-    return subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
+    return run_subprocess(args, capture_output=True, text=True, timeout=timeout, check=False)
 
 
 # ---------------------------------------------------------------------------

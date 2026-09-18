@@ -12,6 +12,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import List, Optional
 
+from ..subprocess_util import run_subprocess
+
 logger = logging.getLogger("portforge_agent.collectors")
 
 
@@ -117,9 +119,15 @@ def run_command(args: List[str], timeout: float = 10.0) -> str:
     not read *some* sockets it doesn't own, while still printing everything
     it could) as long as there is stdout to parse. Only a missing binary or
     a hard timeout is treated as a collector-level failure.
+
+    Goes through subprocess_util.run_subprocess rather than calling
+    subprocess.run directly, so on Windows this never flashes a console
+    window for the child (e.g. docker.exe's periodic probes) even when
+    running under a background/non-interactive parent -- see that
+    module's docstring for the physical reproduction and rationale.
     """
     try:
-        proc = subprocess.run(
+        proc = run_subprocess(
             args,
             capture_output=True,
             text=True,
