@@ -1,0 +1,26 @@
+# Preferred ports are hints, never guarantees -- see
+# docs/phase8b_project_manifest.md "Preferred ports". If `preferred` is
+# already occupied at allocation time, PortForge falls back to another
+# free port in the purpose's range rather than failing the request.
+version: 1
+
+project: legacy-migration
+
+target:
+  host: NTMKEYA
+
+ports:
+  frontend:
+    purpose: frontend
+    protocol: tcp
+    preferred: 3000
+
+  api:
+    purpose: api
+    protocol: tcp
+    preferred: 8080
+
+  database:
+    purpose: postgres
+    protocol: tcp
+    preferred: 5432

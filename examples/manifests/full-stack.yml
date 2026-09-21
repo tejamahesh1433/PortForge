@@ -1,0 +1,26 @@
+# A full-stack app needing a frontend, API, Postgres, and Redis all on the
+# same host, allocated atomically as one bundle. This is the exact shape
+# used in Phase 8B's own physical validation.
+version: 1
+
+project: jarvis
+
+target:
+  host: NTMKEYA
+
+ports:
+  frontend:
+    purpose: frontend
+    protocol: tcp
+
+  api:
+    purpose: api
+    protocol: tcp
+
+  database:
+    purpose: postgres
+    protocol: tcp
+
+  cache:
+    purpose: redis
+    protocol: tcp

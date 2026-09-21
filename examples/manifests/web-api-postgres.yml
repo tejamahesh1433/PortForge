@@ -1,0 +1,22 @@
+# A typical two-tier web app: a frontend, an API, and a Postgres database.
+# No preferred ports -- Central picks the first available port in each
+# purpose's range.
+version: 1
+
+project: storefront
+
+target:
+  host: NTMKEYA
+
+ports:
+  frontend:
+    purpose: frontend
+    protocol: tcp
+
+  api:
+    purpose: api
+    protocol: tcp
+
+  database:
+    purpose: postgres
+    protocol: tcp

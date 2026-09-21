@@ -181,6 +181,9 @@ export interface ReservationOut {
   purpose: string | null;
   notes: string | null;
   local_reservation_id: string | null;
+  /** Phase 8A: set when this reservation was created as part of an agent allocation bundle. */
+  allocation_id: string | null;
+  request_name: string | null;
   created_at: string;
   updated_at: string;
 }

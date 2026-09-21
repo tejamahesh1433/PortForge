@@ -12,6 +12,7 @@ imported directly from the already-installed `portforge_agent` package
 docs/architecture.md "Shared domain types" for the full reasoning.
 """
 from .agent_credential import AgentCredential, EnrollmentToken
+from .allocation import Allocation
 from .base import Base
 from .host import Host
 from .port_observation import CurrentPortObservation, PortObservationEvent
@@ -29,4 +30,5 @@ __all__ = [
     "CentralReservation",
     "Scan",
     "ActivityEvent",
+    "Allocation",
 ]

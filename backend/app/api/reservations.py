@@ -134,6 +134,8 @@ def _serializable(reservation) -> dict:
         "purpose": reservation.purpose,
         "notes": reservation.notes,
         "local_reservation_id": reservation.local_reservation_id,
+        "allocation_id": reservation.allocation_id,
+        "request_name": reservation.request_name,
         "created_at": reservation.created_at,
         "updated_at": reservation.updated_at,
     }

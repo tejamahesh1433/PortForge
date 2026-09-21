@@ -12,10 +12,11 @@
    machines. Entirely optional -- every local agent command works fully
    offline (see agent/README.md "Central sync"). Implemented (Phase 5):
    host registry, authenticated ingestion, reservation sync, advisory
-   recommendations. Not yet implemented: real-time push, a frontend to
-   consume it (next).
-3. **Frontend** (`frontend/`) — Next.js + TypeScript dashboard. Not yet
-   implemented.
+   recommendations, and activity history.
+3. **Dashboard** (`dashboard/`) — Next.js + TypeScript SPA dashboard
+   (React Query, Tailwind CSS, shadcn/ui). Implemented (Phases 6-7). Consumes the
+   backend API to provide cross-host visibility into port usage, offline host
+   detection, project conflict analysis, and global port search.
 4. **CLI** (`cli/`) — `portctl`, a local command-line client that talks to
    the agent and/or backend. Not yet implemented (the agent's own `cli.py`
    already covers this ground locally, including the new `portforge
@@ -192,7 +193,8 @@ full flow in `backend/README.md` "Authentication / enrollment".
 | 3     | Automatic project, service, and purpose detection (agent) | Implemented |
 | 4     | Port reservations, conflict detection, and recommendation (agent) | Implemented |
 | 5     | Central registry, persistent host identity, multi-host API (agent + backend) | Implemented |
-| 6+    | Frontend dashboard, `portctl`, automatic OS service installation, persistent background agent loop, remote process/container control | Not started |
+| 6-7   | Frontend dashboard UI, cross-host search, activity history, health monitoring (dashboard + backend) | Implemented |
+| 8+    | `portctl`, automatic OS service installation, persistent background agent loop, remote process/container control | Not started |
 
 See [`agent/README.md`](../agent/README.md) and
 [`backend/README.md`](../backend/README.md) for full Phase 1-5 details.

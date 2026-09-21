@@ -21,6 +21,9 @@ export const metadata: Metadata = {
   description: "Port discovery, reservation, and conflict-detection console for PortForge-managed hosts.",
 };
 
+export const dynamic = "force-dynamic";
+export const fetchCache = "force-no-store";
+
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html

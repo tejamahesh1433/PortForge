@@ -445,7 +445,7 @@ def test_concurrent_same_host_submissions_do_not_raise_integrity_error(monkeypat
 
     a_holds_lock = threading.Event()
     let_a_proceed = threading.Event()
-    original_lock = ingestion_service._acquire_host_ingestion_lock
+    original_lock = ingestion_service.acquire_host_lock
 
     def patched_lock(db, hid):
         original_lock(db, hid)
@@ -453,7 +453,7 @@ def test_concurrent_same_host_submissions_do_not_raise_integrity_error(monkeypat
             a_holds_lock.set()
             let_a_proceed.wait(timeout=10)
 
-    monkeypatch.setattr(ingestion_service, "_acquire_host_ingestion_lock", patched_lock)
+    monkeypatch.setattr(ingestion_service, "acquire_host_lock", patched_lock)
 
     results: dict = {}
     errors: dict = {}

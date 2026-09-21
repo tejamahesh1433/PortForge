@@ -49,6 +49,62 @@ class ReservationConflictError(Exception):
     """
 
 
+def _insert_reservation(
+    db: Session,
+    host_id: uuid.UUID,
+    port: int,
+    protocol: str,
+    bind_address: Optional[str],
+    project: str,
+    service: Optional[str],
+    purpose: Optional[str],
+    notes: Optional[str],
+    local_reservation_id: Optional[str],
+    allocation_id: Optional[uuid.UUID] = None,
+    request_name: Optional[str] = None,
+) -> CentralReservation:
+    """Inserts one reservation row + its RESERVATION_CREATED activity event
+    and flushes (assigns the row's id), but deliberately does NOT commit.
+
+    Factored out of `create_reservation()` (which commits once, for that
+    single call) specifically so Phase 8A's allocation_service.py can call
+    this for N rows within ONE transaction and commit exactly once at the
+    end -- atomicity (all-N-or-none) is impossible if each row commits
+    independently. Callers are responsible for `db.commit()` (success) or
+    `db.rollback()` (failure) -- see reservation_service.create_reservation
+    for the single-row caller's shape, and allocation_service.py for the
+    bundle caller's.
+    """
+    reservation = CentralReservation(
+        host_id=host_id,
+        port=port,
+        protocol=protocol,
+        bind_address=bind_address,
+        project=project,
+        service=service,
+        purpose=purpose,
+        notes=notes,
+        local_reservation_id=local_reservation_id,
+        allocation_id=allocation_id,
+        request_name=request_name,
+    )
+    ReservationRepository(db).add(reservation)
+    ActivityRepository(db).add(
+        ActivityEvent(
+            host_id=host_id,
+            timestamp=datetime.now(timezone.utc),
+            event_type="RESERVATION_CREATED",
+            port=port,
+            protocol=protocol,
+            bind_address=bind_address,
+            reservation_id=reservation.id,
+            identity_context=project,
+            summary=f"Port {port}/{protocol} reserved for project '{project}'",
+        )
+    )
+    return reservation
+
+
 def create_reservation(
     db: Session,
     host_id: uuid.UUID,
@@ -78,33 +134,9 @@ def create_reservation(
             f"Port {port}/{protocol} is already reserved centrally for this host by a different reservation."
         )
 
-    reservation = CentralReservation(
-        host_id=host_id,
-        port=port,
-        protocol=protocol,
-        bind_address=bind_address,
-        project=project,
-        service=service,
-        purpose=purpose,
-        notes=notes,
-        local_reservation_id=local_reservation_id,
+    reservation = _insert_reservation(
+        db, host_id, port, protocol, bind_address, project, service, purpose, notes, local_reservation_id
     )
-    repo.add(reservation)
-    activity_repo = ActivityRepository(db)
-    activity_repo.add(
-        ActivityEvent(
-            host_id=host_id,
-            timestamp=datetime.now(timezone.utc),
-            event_type="RESERVATION_CREATED",
-            port=port,
-            protocol=protocol,
-            bind_address=bind_address,
-            reservation_id=reservation.id,
-            identity_context=project,
-            summary=f"Port {port}/{protocol} reserved for project '{project}'",
-        )
-    )
-
     db.commit()
     db.refresh(reservation)
     return reservation

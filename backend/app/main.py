@@ -3,11 +3,24 @@
 """
 from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
-from .api import activity, agents, conflicts, health, hosts, ports, projects, recommendations, reservations
+from .api import (
+    activity,
+    agents,
+    allocations,
+    conflicts,
+    health,
+    hosts,
+    ports,
+    projects,
+    recommendations,
+    reservations,
+)
 from .config import get_settings
+from .services.allocation_service import AllocationError
 
 
 def create_app() -> FastAPI:
@@ -52,6 +65,24 @@ def create_app() -> FastAPI:
     app.include_router(conflicts.router, prefix="/api")
     app.include_router(agents.router, prefix="/api")
     app.include_router(activity.router, prefix="/api")
+    app.include_router(allocations.router, prefix="/api")
+
+    # Phase 8A: allocation errors are machine-readable for coding-agent
+    # consumers (see docs/phase8a_agent_allocation.md "Error contract") --
+    # `{"error": {"code": ..., "message": ..., "details": [...]}}` at the
+    # top level, deliberately NOT FastAPI's standard `{"detail": "..."}`
+    # shape every other endpoint in this app uses (that shape assumes a
+    # plain string, per the dashboard client's own parsing -- see
+    # lib/api/client.ts -- so reusing it for a rich object here would be a
+    # real inconsistency, not a simplification). Scoped to AllocationError
+    # only: no other route in this app ever raises it, so every other
+    # endpoint's error shape is completely unaffected.
+    @app.exception_handler(AllocationError)
+    async def _allocation_error_handler(request: Request, exc: AllocationError) -> JSONResponse:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": {"code": exc.code, "message": exc.message, "details": exc.details}},
+        )
 
     return app
 

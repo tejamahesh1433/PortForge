@@ -54,11 +54,31 @@ class CentralClient:
                 status_code = response.status
                 raw = response.read()
         except urllib.error.HTTPError as exc:
+            # Parse the FULL error body, not just a `detail` string --
+            # Phase 8A's allocation errors use `{"error": {"code": ...,
+            # "message": ..., "details": [...]}}` (see
+            # docs/phase8a_agent_allocation.md "Error contract"), distinct
+            # from every other endpoint's plain `{"detail": "..."}`. Both
+            # shapes are exposed: `.error` stays a human-readable string
+            # (existing callers -- central_enroll/status/sync -- only ever
+            # read this), `.data` now carries the full parsed body so
+            # allocation-aware callers can read `.data["error"]["code"]`.
+            body: Any = None
             try:
-                detail = json.loads(exc.read().decode("utf-8")).get("detail")
+                body = json.loads(exc.read().decode("utf-8"))
             except Exception:
-                detail = None
-            return CentralResult(success=False, status_code=exc.code, error=detail or f"HTTP {exc.code}")
+                body = None
+
+            error_message: Optional[str] = None
+            if isinstance(body, dict):
+                if isinstance(body.get("detail"), str):
+                    error_message = body["detail"]
+                elif isinstance(body.get("error"), dict) and isinstance(body["error"].get("message"), str):
+                    error_message = body["error"]["message"]
+
+            return CentralResult(
+                success=False, status_code=exc.code, data=body, error=error_message or f"HTTP {exc.code}"
+            )
         except urllib.error.URLError as exc:
             return CentralResult(success=False, error=f"Could not reach central server: {exc.reason}")
         except (TimeoutError, OSError) as exc:
@@ -130,3 +150,39 @@ class CentralClient:
 
     def sync_reservation(self, reservation: Dict[str, Any]) -> CentralResult:
         return self._request("POST", "/api/reservations", body=reservation)
+
+    # --- Phase 8A: agent allocation ------------------------------------------
+    # Unauthenticated by design -- see docs/phase8a_agent_allocation.md
+    # "Error contract" and the audit's §9: coding-agent allocation has no
+    # authentication in Phase 8A, matching the dashboard's own
+    # already-unauthenticated write endpoints (Phase 7C.5).
+
+    def create_allocation(
+        self, project: str, host_id: str, requests: List[Dict[str, Any]], request_id: Optional[str] = None
+    ) -> CentralResult:
+        body: Dict[str, Any] = {"project": project, "host_id": host_id, "requests": requests}
+        if request_id:
+            body["request_id"] = request_id
+        return self._request("POST", "/api/allocations", body=body, authenticated=False)
+
+    def get_allocation(self, allocation_id: str) -> CentralResult:
+        return self._request("GET", f"/api/allocations/{allocation_id}", authenticated=False)
+
+    def release_allocation(self, allocation_id: str) -> CentralResult:
+        return self._request("DELETE", f"/api/allocations/{allocation_id}", authenticated=False)
+
+    def list_hosts(self, limit: int = 500) -> CentralResult:
+        return self._request("GET", f"/api/hosts?limit={limit}", authenticated=False)
+
+    # --- Phase 8B: project manifest ("plan" candidate info) ------------------
+    # `GET /api/recommendations` is an existing, UNMODIFIED Phase 5 endpoint
+    # (backend/app/api/recommendations.py) -- this is the only new client
+    # method Phase 8B needed for `project plan`. It is always a
+    # "central_suggestion", never a reservation. See
+    # docs/phase8b_manifest_audit.md §4.
+
+    def get_recommendation(self, host_id: str, service_type: str, protocol: str = "tcp") -> CentralResult:
+        from urllib.parse import quote
+
+        query = f"host_id={quote(host_id)}&service_type={quote(service_type)}&protocol={quote(protocol)}"
+        return self._request("GET", f"/api/recommendations?{query}", authenticated=False)

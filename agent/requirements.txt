@@ -7,3 +7,15 @@ psutil>=5.9
 # YAML content can execute arbitrary Python, consistent with "never
 # execute project files."
 pyyaml>=6.0
+# ruamel.yaml: Phase 8C's Compose file editor (compose_editor.py) needs to
+# rewrite ONE port value in an existing compose.yaml while preserving
+# comments, key order, anchors, and flow-vs-block style -- something
+# yaml.safe_load()+safe_dump() cannot do (it's a lossy round-trip; see
+# docs/phase8c_config_audit.md §7/§16). ruamel.yaml's round-trip mode
+# (YAML(typ="rt")) is the standard tool for exactly this, and -- used this
+# way -- stays in the same safety class as safe_load: it does not
+# construct arbitrary Python objects from file content. This is the only
+# other new PortForge-agent dependency since pyyaml; not used anywhere
+# manifest parsing already works fine with plain safe_load (manifest.py is
+# unchanged in this respect).
+ruamel.yaml>=0.18

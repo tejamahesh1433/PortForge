@@ -17,6 +17,16 @@ Reservations, conflicts, and recommendation (Phase 4):
     python -m portforge_agent conflicts [--json]
     python -m portforge_agent sync-reservations [--path DIR] [--json]
 
+Agent allocation (Phase 8A -- provider-independent; see
+docs/phase8a_agent_allocation.md for the full contract):
+    python -m portforge_agent allocate --host H --project P
+                                        --request NAME:PURPOSE[:PROTOCOL[:PREFERRED_PORT]] [...]
+                                        [--request-id ID] [--url URL] [--json] [--format text|env]
+    python -m portforge_agent allocate --file portforge.request.json [--url URL] [--json] [--format text|env]
+    python -m portforge_agent allocate --stdin [--url URL] [--json] [--format text|env]
+    python -m portforge_agent allocation get ALLOCATION_ID [--url URL] [--json] [--format text|env]
+    python -m portforge_agent allocation release ALLOCATION_ID [--url URL] [--json]
+
 Also installed as a console script: `portforge <command> ...` behaves
 identically to `python -m portforge_agent <command> ...` (see
 pyproject.toml `[project.scripts]`).
@@ -55,6 +65,10 @@ from .reserve_ops import release as reserve_ops_release
 from .reserve_ops import release_by_id as reserve_ops_release_by_id
 from .reserve_ops import reserve as reserve_ops_reserve
 from .reserve_ops import sync_project_reservations
+from .manifest import ManifestError, load_and_validate_manifest
+from .project_adapter import build_candidate_preview, build_normalized_request, resolve_host_ref, to_allocation_body
+from . import config_manager as _config_manager
+from .config_files import ConfigPathError as _ConfigPathError
 
 _MIN_COLUMN_WIDTH = 8
 _COLUMN_GAP = 2
@@ -574,6 +588,615 @@ def _cmd_sync_reservations(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Phase 8A: agent allocation API/CLI -- provider-independent. A coding
+# agent/tool asks Central "I need these ports on this host for this
+# project" and gets back an atomically-reserved bundle. See
+# docs/phase8a_agent_allocation.md for the full contract. Entirely
+# separate from local reservation commands above (`reserve`/`release`/
+# `next`) -- allocation always talks to Central, never the local
+# reservation file, and is unauthenticated by design (see that doc's
+# "Error contract" section).
+# ---------------------------------------------------------------------------
+
+
+def _resolve_central_base_url(args: argparse.Namespace) -> "tuple[Optional[str], Optional[str]]":
+    """Resolves the Central base URL for allocation commands, in order:
+    `--url` flag -> `PORTFORGE_CENTRAL_URL` env var (the convention already
+    used by this project's own physical-validation tooling) -> the bare
+    `url` field of `~/.portforge/central.json` (deliberately NOT gated on
+    that file's `enabled`/`token` -- allocation needs no token, so
+    `CentralConfig.is_usable()` is too strict here). Returns (url, error).
+    """
+    import os
+
+    explicit = getattr(args, "url", None)
+    if explicit:
+        return explicit, None
+
+    env_url = os.environ.get("PORTFORGE_CENTRAL_URL")
+    if env_url:
+        return env_url, None
+
+    from .central_config import load_central_config
+
+    config = load_central_config()
+    if config.url:
+        return config.url, None
+
+    return None, (
+        "No Central server URL configured. Pass --url, set PORTFORGE_CENTRAL_URL, "
+        "or run `portforge central enroll --url ...` first."
+    )
+
+
+def _allocation_client(args: argparse.Namespace):
+    from .central_client import CentralClient
+
+    url, error = _resolve_central_base_url(args)
+    if error:
+        return None, error
+    return CentralClient(url), None
+
+
+# `_resolve_host_id` lived here through Phase 8A. Phase 8B moved it to
+# `project_adapter.resolve_host_ref` (returns a NormalizedHostRef plus an
+# error code, not just an id) so `project validate/plan/allocate` and this
+# module's own `allocate` share exactly one host resolver -- see
+# docs/phase8b_manifest_audit.md §3.
+
+
+def _parse_request_flag(value: str) -> "tuple[Optional[dict], Optional[str]]":
+    """Parses one `--request` flag value: `name:purpose[:protocol[:preferred_port]]`."""
+    parts = value.split(":")
+    if len(parts) < 2 or len(parts) > 4:
+        return None, f"Invalid --request '{value}' -- expected name:purpose[:protocol[:preferred_port]]"
+
+    name, purpose = parts[0].strip(), parts[1].strip()
+    if not name or not purpose:
+        return None, f"Invalid --request '{value}' -- name and purpose must not be blank"
+
+    request: dict = {"name": name, "purpose": purpose}
+    if len(parts) >= 3 and parts[2].strip():
+        request["protocol"] = parts[2].strip()
+    if len(parts) == 4 and parts[3].strip():
+        try:
+            request["preferred_port"] = int(parts[3])
+        except ValueError:
+            return None, f"Invalid --request '{value}' -- preferred_port must be an integer"
+
+    return request, None
+
+
+def _print_allocation_error(payload, args: argparse.Namespace) -> None:
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        error = payload.get("error", {}) if isinstance(payload, dict) else {}
+        code = error.get("code", "ERROR")
+        message = error.get("message", str(payload))
+        print(f"Error [{code}]: {message}", file=sys.stderr)
+
+
+def _env_var_name(name: str) -> str:
+    """Derives a safe environment-variable name from a request's `name`
+    field -- uppercased, any run of non-alphanumeric characters collapsed
+    to a single underscore, never executed/evaluated (Phase 8A §36: no
+    arbitrary environment-variable names, no command execution based on
+    request strings).
+    """
+    import re
+
+    safe = re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_").upper()
+    return f"{safe or 'PORT'}_PORT"
+
+
+def _render_allocation_env(data: dict) -> str:
+    lines = [f"{_env_var_name(entry['name'])}={entry['port']}" for entry in data.get("allocations", [])]
+    return "\n".join(lines)
+
+
+def _render_allocation_human(data: dict, heading: str) -> None:
+    print(heading)
+    print(f"Allocation ID: {data['allocation_id']}")
+    print(f"Project: {data['project']}   Host: {data['host']['hostname']}   Status: {data['status']}")
+    validation = data.get("validation", {})
+    print(
+        f"Validation: host={validation.get('host_health_state')}  "
+        f"snapshot_age={validation.get('snapshot_age_seconds')}s  "
+        f"bind_probe={validation.get('bind_probe')}"
+    )
+    print()
+    for entry in data.get("allocations", []):
+        print(f"  {entry['name']:<20} {entry['purpose']:<12} {entry['port']}/{entry['protocol']}")
+    if not data.get("allocations"):
+        print("  (no active reservations)")
+
+
+def _load_allocation_request(args: argparse.Namespace) -> "tuple[Optional[dict], Optional[str]]":
+    """Builds the allocation request body from whichever input source was
+    given: --file, --stdin, or direct --host/--project/--request flags.
+    Exactly one source is expected; callers validate that in the parser
+    (mutually exclusive group) except for the flags case, detected here by
+    absence of --file/--stdin.
+    """
+    if args.file:
+        try:
+            with open(args.file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError) as exc:
+            return None, f"Could not read/parse --file '{args.file}': {exc}"
+        return data, None
+
+    if args.stdin:
+        try:
+            data = json.load(sys.stdin)
+        except ValueError as exc:
+            return None, f"Could not parse JSON from stdin: {exc}"
+        return data, None
+
+    if not args.host or not args.project or not args.request:
+        return None, "Provide --file, --stdin, or all of --host/--project/--request (at least one)."
+
+    requests = []
+    for raw in args.request:
+        parsed, error = _parse_request_flag(raw)
+        if error:
+            return None, error
+        requests.append(parsed)
+
+    data = {"project": args.project, "host": args.host, "requests": requests}
+    if args.request_id:
+        data["request_id"] = args.request_id
+    return data, None
+
+
+def _cmd_allocate(args: argparse.Namespace) -> int:
+    client, error = _allocation_client(args)
+    if error:
+        if args.json:
+            print(json.dumps({"error": {"code": "INVALID_REQUEST", "message": error, "details": []}}, indent=2))
+        else:
+            print(f"Error: {error}", file=sys.stderr)
+        return 2
+
+    request_data, error = _load_allocation_request(args)
+    if error:
+        if args.json:
+            print(json.dumps({"error": {"code": "INVALID_REQUEST", "message": error, "details": []}}, indent=2))
+        else:
+            print(f"Error: {error}", file=sys.stderr)
+        return 2
+
+    host_field = request_data.get("host") or request_data.get("host_id")
+    if not host_field:
+        message = "Request is missing 'host' (hostname or UUID)."
+        print(json.dumps({"error": {"code": "INVALID_REQUEST", "message": message}}, indent=2)) if args.json else print(
+            f"Error: {message}", file=sys.stderr
+        )
+        return 2
+
+    host, error, error_code = resolve_host_ref(client, host_field)
+    if error:
+        if args.json:
+            print(json.dumps({"error": {"code": error_code, "message": error, "details": []}}, indent=2))
+        else:
+            print(f"Error: {error}", file=sys.stderr)
+        return 2
+
+    result = client.create_allocation(
+        project=request_data["project"],
+        host_id=host.id,
+        requests=request_data["requests"],
+        request_id=request_data.get("request_id"),
+    )
+
+    if not result.success:
+        payload = result.data if isinstance(result.data, dict) and "error" in result.data else {
+            "error": {"code": "ALLOCATION_UNAVAILABLE", "message": result.error or "Allocation failed.", "details": []}
+        }
+        _print_allocation_error(payload, args)
+        return 1
+
+    if args.json:
+        print(json.dumps(result.data, indent=2))
+    elif args.format == "env":
+        print(_render_allocation_env(result.data))
+    else:
+        _render_allocation_human(result.data, "Allocation created")
+
+    return 0
+
+
+def _cmd_allocation_get(args: argparse.Namespace) -> int:
+    client, error = _allocation_client(args)
+    if error:
+        print(json.dumps({"error": {"code": "INVALID_REQUEST", "message": error}}, indent=2)) if args.json else print(
+            f"Error: {error}", file=sys.stderr
+        )
+        return 2
+
+    result = client.get_allocation(args.allocation_id)
+    if not result.success:
+        payload = result.data if isinstance(result.data, dict) and "error" in result.data else {
+            "error": {"code": "ALLOCATION_NOT_FOUND", "message": result.error or "Not found.", "details": []}
+        }
+        _print_allocation_error(payload, args)
+        return 1
+
+    if args.json:
+        print(json.dumps(result.data, indent=2))
+    elif args.format == "env":
+        print(_render_allocation_env(result.data))
+    else:
+        _render_allocation_human(result.data, "Allocation")
+
+    return 0
+
+
+def _cmd_allocation_release(args: argparse.Namespace) -> int:
+    client, error = _allocation_client(args)
+    if error:
+        print(json.dumps({"error": {"code": "INVALID_REQUEST", "message": error}}, indent=2)) if args.json else print(
+            f"Error: {error}", file=sys.stderr
+        )
+        return 2
+
+    result = client.release_allocation(args.allocation_id)
+    if not result.success:
+        payload = result.data if isinstance(result.data, dict) and "error" in result.data else {
+            "error": {"code": "ALLOCATION_NOT_FOUND", "message": result.error or "Not found.", "details": []}
+        }
+        _print_allocation_error(payload, args)
+        return 1
+
+    if args.json:
+        print(json.dumps(result.data, indent=2))
+    else:
+        _render_allocation_human(result.data, "Allocation released")
+
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 8B: project manifest commands (`project validate/plan/allocate`) --
+# provider-neutral, see docs/phase8b_project_manifest.md. All three share
+# the same manifest-load + host-resolve prelude
+# (`_load_manifest_and_host`); `allocate` is the only one that mutates
+# anything, and it does so purely by calling the existing, unmodified
+# `client.create_allocation()` -- no allocation logic is duplicated here.
+# ---------------------------------------------------------------------------
+
+
+def _print_manifest_error(error: "ManifestError", args: argparse.Namespace) -> None:
+    if args.json:
+        print(json.dumps({"error": {"code": error.code, "message": error.message, "details": error.details}}, indent=2))
+    else:
+        print(f"Error [{error.code}]: {error.message}", file=sys.stderr)
+
+
+def _project_manifest_path(args: argparse.Namespace):
+    from pathlib import Path
+
+    return Path(args.manifest) if getattr(args, "manifest", None) else None
+
+
+def _load_manifest_and_host(args: argparse.Namespace):
+    """Shared prelude for validate/plan/allocate: resolves Central's URL,
+    loads+validates the manifest, and resolves its `target.host`. Returns
+    `(client, manifest, host, error_result)` -- on failure, the first three
+    are None and `error_result` is `(exit_code, already_printed=True)`
+    (the error is printed here, at the one place all three commands share,
+    so each command's own body only has to check for None and return).
+    """
+    client, url_error = _allocation_client(args)
+    if url_error:
+        if args.json:
+            print(json.dumps({"error": {"code": "INVALID_REQUEST", "message": url_error, "details": []}}, indent=2))
+        else:
+            print(f"Error: {url_error}", file=sys.stderr)
+        return None, None, None, 2
+
+    try:
+        manifest = load_and_validate_manifest(_project_manifest_path(args))
+    except ManifestError as exc:
+        _print_manifest_error(exc, args)
+        return None, None, None, 2
+
+    host, host_error, host_code = resolve_host_ref(client, manifest.host)
+    if host_error:
+        if args.json:
+            print(json.dumps({"error": {"code": host_code, "message": host_error, "details": []}}, indent=2))
+        else:
+            print(f"Error: {host_error}", file=sys.stderr)
+        return None, None, None, 2
+
+    return client, manifest, host, None
+
+
+def _cmd_project_validate(args: argparse.Namespace) -> int:
+    client, manifest, host, error_code = _load_manifest_and_host(args)
+    if error_code is not None:
+        return error_code
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "valid": True,
+                    "version": manifest.version,
+                    "project": manifest.project,
+                    "host": {"id": host.id, "hostname": host.hostname},
+                    "requests": len(manifest.requests),
+                },
+                indent=2,
+            )
+        )
+    else:
+        print(f"Manifest is valid (version {manifest.version}).")
+        print(f"Project: {manifest.project}")
+        print(f"Host: {host.hostname} ({host.id})")
+        print(f"Requests: {len(manifest.requests)}")
+        for item in manifest.requests:
+            preferred = f"  preferred={item.preferred_port}" if item.preferred_port else ""
+            print(f"  {item.name:<20} {item.purpose:<12} {item.protocol}{preferred}")
+
+    return 0
+
+
+def _cmd_project_plan(args: argparse.Namespace) -> int:
+    client, manifest, host, error_code = _load_manifest_and_host(args)
+    if error_code is not None:
+        return error_code
+
+    requests_out = build_candidate_preview(client, host, manifest.requests)
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "committed": False,
+                    "project": manifest.project,
+                    "host": {"id": host.id, "hostname": host.hostname},
+                    "requests": requests_out,
+                },
+                indent=2,
+            )
+        )
+    else:
+        print(f"Plan for '{manifest.project}' on {host.hostname} (advisory only -- nothing reserved)\n")
+        for r in requests_out:
+            preferred = f"  preferred={r['preferred_port']}" if r["preferred_port"] else ""
+            candidate = r["candidate_port"] if r["candidate_port"] is not None else "none available"
+            print(f"  {r['name']:<20} {r['purpose']:<12} {r['protocol']}{preferred}  candidate={candidate}")
+        print(
+            "\nNote: preferred ports are shown as given but not verified here; a candidate port "
+            "already free right now may not still be free by the time you run 'project allocate'."
+        )
+
+    return 0
+
+
+def _cmd_project_allocate(args: argparse.Namespace) -> int:
+    client, manifest, host, error_code = _load_manifest_and_host(args)
+    if error_code is not None:
+        return error_code
+
+    normalized = build_normalized_request(manifest, host)
+    # CLI --request-id wins over a manifest-declared request_id, consistent
+    # with this project's existing "CLI arguments > project config"
+    # precedence (see config.py's module docstring and
+    # docs/phase8b_manifest_audit.md §6).
+    request_id = args.request_id or manifest.request_id
+    body = to_allocation_body(normalized, request_id)
+
+    result = client.create_allocation(
+        project=body["project"], host_id=body["host_id"], requests=body["requests"], request_id=body["request_id"]
+    )
+
+    if not result.success:
+        payload = result.data if isinstance(result.data, dict) and "error" in result.data else {
+            "error": {"code": "ALLOCATION_UNAVAILABLE", "message": result.error or "Allocation failed.", "details": []}
+        }
+        _print_allocation_error(payload, args)
+        return 1
+
+    data = result.data
+    ports = {entry["name"]: entry["port"] for entry in data.get("allocations", [])}
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "committed": True,
+                    "allocation_id": data["allocation_id"],
+                    "project": data["project"],
+                    "host": data["host"],
+                    "ports": ports,
+                    "allocations": data["allocations"],
+                },
+                indent=2,
+            )
+        )
+    elif args.format == "env":
+        print(_render_allocation_env(data))
+    else:
+        _render_allocation_human(data, f"Allocation created for '{manifest.project}'")
+
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 8C: safe config plan/apply/status/rollback -- maps a committed
+# Phase 8A allocation into explicitly-declared project config files
+# (dotenv, Compose). `project allocate` above NEVER touches these; only
+# these `config` commands ever write to a project's real files, and only
+# `config apply` does so (`plan`/`status` are read-only, `rollback`
+# restores exact original bytes). See docs/phase8c_safe_config.md.
+# ---------------------------------------------------------------------------
+
+
+def _print_config_error(error: "_config_manager.ConfigError", args: argparse.Namespace) -> None:
+    if args.json:
+        print(json.dumps({"error": {"code": error.code, "message": error.message, "details": error.details}}, indent=2))
+    else:
+        print(f"Error [{error.code}]: {error.message}", file=sys.stderr)
+
+
+def _resolve_project_root(args: argparse.Namespace, manifest_path=None):
+    from pathlib import Path
+
+    if getattr(args, "project_root", None):
+        return Path(args.project_root)
+    if manifest_path is not None:
+        return manifest_path.parent
+    return Path.cwd()
+
+
+def _load_manifest_host_and_allocation(args: argparse.Namespace):
+    """Shared prelude for `config plan`/`config apply`: manifest + host
+    (via `_load_manifest_and_host`), then fetches and ownership-verifies
+    the `--allocation` id against Central. Returns
+    `(client, manifest, host, allocation_data, project_root, exit_code)`
+    -- on failure the first four are None and the error has already been
+    printed, matching `_load_manifest_and_host`'s own convention.
+    """
+    client, manifest, host, error_code = _load_manifest_and_host(args)
+    if error_code is not None:
+        return None, None, None, None, None, error_code
+
+    resolved_manifest_path = _project_manifest_path(args)
+    if resolved_manifest_path is None:
+        from .manifest import discover_manifest_path
+
+        resolved_manifest_path = discover_manifest_path()
+    project_root = _resolve_project_root(args, resolved_manifest_path)
+
+    result = client.get_allocation(args.allocation)
+    if not result.success:
+        error = _config_manager.ConfigError(
+            "CONFIG_ALLOCATION_NOT_FOUND", f"Allocation '{args.allocation}' could not be fetched from Central: "
+            f"{result.error or 'not found'}", status_code=404
+        )
+        _print_config_error(error, args)
+        return None, None, None, None, None, 2
+
+    allocation_data = result.data
+    try:
+        _config_manager.verify_allocation_ownership(allocation_data, manifest, host.id)
+    except _config_manager.ConfigError as exc:
+        _print_config_error(exc, args)
+        return None, None, None, None, None, 1
+
+    return client, manifest, host, allocation_data, project_root, None
+
+
+def _cmd_config_plan(args: argparse.Namespace) -> int:
+    client, manifest, host, allocation_data, project_root, error_code = _load_manifest_host_and_allocation(args)
+    if error_code is not None:
+        return error_code
+
+    try:
+        plan = _config_manager.build_plan(manifest, allocation_data, project_root)
+        _config_manager.persist_plan(plan, project_root)
+    except (_config_manager.ConfigError, _ConfigPathError) as exc:
+        if isinstance(exc, _ConfigPathError):
+            exc = _config_manager.ConfigError("CONFIG_PATH_OUTSIDE_PROJECT", str(exc), status_code=400)
+        _print_config_error(exc, args)
+        return 1
+
+    payload = _config_manager.plan_to_json(plan)
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(f"Config plan for allocation {plan.allocation_id} (mutation {plan.mutation_id})\n")
+        for f in plan.files:
+            print(f"  {f.relative_path} [{f.kind}] -- {f.action}")
+            for c in f.changes:
+                if f.kind == "dotenv":
+                    print(f"      {c['key']}: {c['before']!r} -> {c['after']!r} ({c['action']})")
+                else:
+                    print(
+                        f"      {c['service']} {c['container_port']}/{c['protocol']}: "
+                        f"{c['before']!r} -> {c['after']!r} ({c['action']})"
+                    )
+        print(f"\nNo files were changed. Run 'config apply' to write these changes (mutation_id={plan.mutation_id}).")
+
+    return 0
+
+
+def _cmd_config_apply(args: argparse.Namespace) -> int:
+    client, manifest, host, allocation_data, project_root, error_code = _load_manifest_host_and_allocation(args)
+    if error_code is not None:
+        return error_code
+
+    mutation_id = _config_manager.find_latest_planned_mutation(project_root, args.allocation)
+    if mutation_id is None:
+        error = _config_manager.ConfigError(
+            "CONFIG_MUTATION_NOT_FOUND",
+            f"No pending config plan found for allocation '{args.allocation}' in {project_root}. "
+            "Run 'config plan' first.",
+            status_code=404,
+        )
+        _print_config_error(error, args)
+        return 1
+
+    try:
+        record = _config_manager.apply_mutation(project_root, mutation_id)
+    except _config_manager.ConfigError as exc:
+        _print_config_error(exc, args)
+        return 1
+
+    if args.json:
+        print(json.dumps({"committed": True, **record}, indent=2))
+    else:
+        print(f"Applied mutation {record['mutation_id']} (status={record['status']})")
+        for f in record["files"]:
+            print(f"  {f['relative_path']} [{f['kind']}] -- {f['action']}")
+
+    return 0
+
+
+def _cmd_config_status(args: argparse.Namespace) -> int:
+    project_root = _resolve_project_root(args)
+    try:
+        status = _config_manager.get_status(project_root, args.mutation_id)
+    except _config_manager.ConfigError as exc:
+        _print_config_error(exc, args)
+        return 1
+
+    if args.json:
+        print(json.dumps(status, indent=2))
+    else:
+        print(f"Mutation {status['mutation_id']}: {status['status']}")
+        print(f"Allocation: {status['allocation_id']}   Project: {status['project']}")
+        print(f"Created: {status['created_at']}   Applied: {status['applied_at']}   Rolled back: {status['rolled_back_at']}")
+        for f in status["files"]:
+            print(f"  {f['file']} [{f['type']}] -- {f['action']}")
+
+    return 0
+
+
+def _cmd_config_rollback(args: argparse.Namespace) -> int:
+    project_root = _resolve_project_root(args)
+    try:
+        record = _config_manager.rollback_mutation(project_root, args.mutation_id)
+    except _config_manager.ConfigError as exc:
+        _print_config_error(exc, args)
+        return 1
+
+    if args.json:
+        print(json.dumps(record, indent=2))
+    else:
+        print(f"Rolled back mutation {record['mutation_id']} (status={record['status']})")
+        for f in record["files"]:
+            print(f"  {f['relative_path']} [{f['kind']}] restored")
+
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
 
@@ -774,6 +1397,134 @@ def build_parser() -> argparse.ArgumentParser:
     )
     central_sync_parser.add_argument("--json", action="store_true")
     central_sync_parser.set_defaults(func=_cmd_central_sync)
+
+    # --- Phase 8A: agent allocation ----------------------------------------
+    allocate_parser = subparsers.add_parser(
+        "allocate", help="Atomically request one or more ports from Central for a project on a host"
+    )
+    allocate_parser.add_argument("--host", type=str, default=None, help="Target hostname or UUID")
+    allocate_parser.add_argument("--project", type=str, default=None)
+    allocate_parser.add_argument(
+        "--request",
+        action="append",
+        default=None,
+        metavar="NAME:PURPOSE[:PROTOCOL[:PREFERRED_PORT]]",
+        help="Repeatable. e.g. --request frontend:frontend:tcp",
+    )
+    allocate_parser.add_argument("--request-id", type=str, default=None, help="Idempotency key")
+    allocate_parser.add_argument("--file", type=str, default=None, help="Read the full request from a JSON file")
+    allocate_parser.add_argument("--stdin", action="store_true", help="Read the full request as JSON from stdin")
+    allocate_parser.add_argument("--url", type=str, default=None, help="Central server base URL")
+    allocate_parser.add_argument("--json", action="store_true")
+    allocate_parser.add_argument("--format", type=str, default="text", choices=["text", "env"])
+    allocate_parser.set_defaults(func=_cmd_allocate)
+
+    allocation_parser = subparsers.add_parser("allocation", help="Inspect or release an existing allocation")
+    allocation_subparsers = allocation_parser.add_subparsers(dest="allocation_command", required=True)
+
+    allocation_get_parser = allocation_subparsers.add_parser("get", help="Show an allocation's current state")
+    allocation_get_parser.add_argument("allocation_id", type=str)
+    allocation_get_parser.add_argument("--url", type=str, default=None)
+    allocation_get_parser.add_argument("--json", action="store_true")
+    allocation_get_parser.add_argument("--format", type=str, default="text", choices=["text", "env"])
+    allocation_get_parser.set_defaults(func=_cmd_allocation_get)
+
+    allocation_release_parser = allocation_subparsers.add_parser(
+        "release", help="Release all still-active reservations belonging to an allocation"
+    )
+    allocation_release_parser.add_argument("allocation_id", type=str)
+    allocation_release_parser.add_argument("--url", type=str, default=None)
+    allocation_release_parser.add_argument("--json", action="store_true")
+    allocation_release_parser.set_defaults(func=_cmd_allocation_release)
+
+    # --- Phase 8B: project manifest ----------------------------------------
+    project_parser = subparsers.add_parser(
+        "project", help="Validate/plan/allocate ports for a project using a portforge.yml manifest"
+    )
+    project_subparsers = project_parser.add_subparsers(dest="project_command", required=True)
+
+    def _add_manifest_arg(p: argparse.ArgumentParser) -> None:
+        p.add_argument(
+            "manifest",
+            type=str,
+            nargs="?",
+            default=None,
+            help="Path to a portforge.yml manifest (default: discover portforge.yml/.yaml in the current directory)",
+        )
+        p.add_argument("--url", type=str, default=None, help="Central server base URL")
+        p.add_argument("--json", action="store_true")
+
+    project_validate_parser = project_subparsers.add_parser(
+        "validate", help="Validate a project manifest and resolve its host (no allocation, no reservation)"
+    )
+    _add_manifest_arg(project_validate_parser)
+    project_validate_parser.set_defaults(func=_cmd_project_validate)
+
+    project_plan_parser = project_subparsers.add_parser(
+        "plan", help="Show advisory candidate ports for a manifest (non-mutating)"
+    )
+    _add_manifest_arg(project_plan_parser)
+    project_plan_parser.set_defaults(func=_cmd_project_plan)
+
+    project_allocate_parser = project_subparsers.add_parser(
+        "allocate", help="Atomically allocate every port in a manifest (calls Phase 8A's allocation API)"
+    )
+    _add_manifest_arg(project_allocate_parser)
+    project_allocate_parser.add_argument(
+        "--request-id", type=str, default=None, help="Idempotency key (overrides the manifest's own request_id, if any)"
+    )
+    project_allocate_parser.add_argument("--format", type=str, default="text", choices=["text", "env"])
+    project_allocate_parser.set_defaults(func=_cmd_project_allocate)
+
+    # --- Phase 8C: safe config plan/apply/status/rollback ------------------
+    config_parser = subparsers.add_parser(
+        "config", help="Map a committed allocation into declared project config files (dotenv, Compose)"
+    )
+    config_subparsers = config_parser.add_subparsers(dest="config_command", required=True)
+
+    def _add_config_plan_apply_args(p: argparse.ArgumentParser) -> None:
+        p.add_argument(
+            "manifest",
+            type=str,
+            nargs="?",
+            default=None,
+            help="Path to a portforge.yml manifest (default: discover in the current directory)",
+        )
+        p.add_argument("--allocation", type=str, required=True, help="Allocation id this config maps to")
+        p.add_argument(
+            "--project-root",
+            type=str,
+            default=None,
+            help="Directory config file paths are resolved against (default: the manifest's own directory)",
+        )
+        p.add_argument("--url", type=str, default=None, help="Central server base URL")
+        p.add_argument("--json", action="store_true")
+
+    config_plan_parser = config_subparsers.add_parser(
+        "plan", help="Show exact proposed config file changes for a committed allocation (non-mutating)"
+    )
+    _add_config_plan_apply_args(config_plan_parser)
+    config_plan_parser.set_defaults(func=_cmd_config_plan)
+
+    config_apply_parser = config_subparsers.add_parser(
+        "apply", help="Apply the most recently planned config mutation for this manifest + allocation"
+    )
+    _add_config_plan_apply_args(config_apply_parser)
+    config_apply_parser.set_defaults(func=_cmd_config_apply)
+
+    config_status_parser = config_subparsers.add_parser("status", help="Show a config mutation's current status")
+    config_status_parser.add_argument("mutation_id", type=str)
+    config_status_parser.add_argument("--project-root", type=str, default=None)
+    config_status_parser.add_argument("--json", action="store_true")
+    config_status_parser.set_defaults(func=_cmd_config_status)
+
+    config_rollback_parser = config_subparsers.add_parser(
+        "rollback", help="Restore the exact original bytes of every file a mutation changed"
+    )
+    config_rollback_parser.add_argument("mutation_id", type=str)
+    config_rollback_parser.add_argument("--project-root", type=str, default=None)
+    config_rollback_parser.add_argument("--json", action="store_true")
+    config_rollback_parser.set_defaults(func=_cmd_config_rollback)
 
     from .cli_agent import add_agent_subparsers
     add_agent_subparsers(subparsers)

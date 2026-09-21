@@ -45,5 +45,7 @@ class ReservationOut(ApiModel):
     purpose: Optional[str]
     notes: Optional[str]
     local_reservation_id: Optional[str]
+    allocation_id: Optional[uuid.UUID] = None
+    request_name: Optional[str] = None
     created_at: datetime
     updated_at: datetime

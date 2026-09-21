@@ -101,7 +101,8 @@ same-request duplicate problem above (that one reproduces with zero
 concurrency; this one only reproduces with two truly overlapping
 transactions). `ingest_snapshot()` now opens with a PostgreSQL
 transaction-scoped advisory lock keyed by `host_id`
-(`_acquire_host_ingestion_lock()`) -- automatically released on
+(`services/host_lock.py::acquire_host_lock()`, shared with Phase 8A
+allocation) -- automatically released on
 commit/rollback, no manual unlock, and scoped per-host so concurrent
 traffic for *different* hosts is entirely unaffected (no new QueuePool
 pressure). The second overlapping request simply waits for the first to
@@ -116,7 +117,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models.port_observation import CurrentPortObservation, PortObservationEvent
@@ -126,6 +127,7 @@ from ..repositories.port_repository import PortRepository
 from ..repositories.activity_repository import ActivityRepository
 from ..models.activity import ActivityEvent
 from ..schemas.agent import ObservationIn
+from .host_lock import acquire_host_lock
 
 
 class SnapshotRejectedError(Exception):
@@ -309,14 +311,6 @@ def _canonicalize_observations(observations: List[ObservationIn]) -> "Tuple[List
     return canonical, len(observations) - len(canonical)
 
 
-def _acquire_host_ingestion_lock(db: Session, host_id: uuid.UUID) -> None:
-    """Serializes concurrent ingest_snapshot() calls for the SAME host_id
-    via a transaction-scoped PostgreSQL advisory lock. See the module
-    docstring's "Concurrent same-host ingestion" section.
-    """
-    db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:host_id))"), {"host_id": str(host_id)})
-
-
 def ingest_snapshot(
     db: Session,
     host_id: uuid.UUID,
@@ -336,7 +330,8 @@ def ingest_snapshot(
     # Serializes concurrent submissions for THIS host only -- see
     # "Concurrent same-host ingestion" above. Acquired before any read so
     # a second overlapping request always sees fully-committed state.
-    _acquire_host_ingestion_lock(db, host_id)
+    # (Now shared with Phase 8A allocation -- see services/host_lock.py.)
+    acquire_host_lock(db, host_id)
 
     # Idempotent replay: this exact scan was already accepted.
     existing_scan = db.get(Scan, scan_id)

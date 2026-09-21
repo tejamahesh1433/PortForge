@@ -20,6 +20,7 @@ import { formatAbsoluteTime } from "@/lib/utils/format";
 import type { ReservationOut } from "@/lib/types/api";
 import { ReservationModal } from "@/components/forms/reservation-modal";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { toast } from "@/components/ui/toast";
 
 const PAGE_SIZE = 100;
@@ -129,7 +130,23 @@ function ReservationsPageContent() {
           <span className="font-mono text-xs">{row.original.bind_address ?? "0.0.0.0"}</span>
         ),
       },
-      { accessorKey: "project", header: "Project" },
+      {
+        accessorKey: "project",
+        header: "Project",
+        cell: ({ row }) => (
+          <div className="flex items-center gap-2">
+            <span>{row.original.project}</span>
+            {row.original.allocation_id && (
+              <Badge
+                variant="outline"
+                title={`Created via agent allocation ${row.original.allocation_id}${row.original.request_name ? ` (request "${row.original.request_name}")` : ""}`}
+              >
+                allocated
+              </Badge>
+            )}
+          </div>
+        ),
+      },
       {
         accessorKey: "service",
         header: "Service",

@@ -41,7 +41,25 @@ class CentralReservation(Base, TimestampMixin):
     # services/reservation_service.py "Synchronization strategy").
     local_reservation_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
 
+    # Phase 8A: set only for reservations created through an atomic
+    # allocation bundle (services/allocation_service.py) -- NULL for every
+    # other reservation (manual dashboard/agent reservations, unchanged).
+    # ON DELETE SET NULL rather than CASCADE: releasing/deleting an
+    # Allocation row must never silently delete a still-active reservation
+    # out from under a project.
+    allocation_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("allocations.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # The caller-chosen bundle key this reservation was requested under
+    # (e.g. "frontend", "database") -- distinct from `service`/`purpose`,
+    # which are separate existing concepts. Only meaningful alongside
+    # allocation_id; NULL otherwise. Lets GET /api/allocations/{id} and the
+    # CLI's `--format env` reconstruct the original request->port mapping
+    # without a second lookup table.
+    request_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
     host: Mapped["Host"] = relationship(back_populates="reservations")  # noqa: F821
+    allocation: Mapped[Optional["Allocation"]] = relationship(back_populates="reservations")  # noqa: F821
 
     __table_args__ = (
         UniqueConstraint("host_id", "port", "protocol", "bind_address", name="uq_central_reservation_binding"),

@@ -19,7 +19,8 @@ exactly what the central server must not pretend to do).
 from __future__ import annotations
 
 import uuid
-from typing import List, Optional
+from dataclasses import dataclass, field
+from typing import FrozenSet, List, Optional
 
 from sqlalchemy.orm import Session
 
@@ -34,7 +35,12 @@ from ..schemas.recommendation import CentralRecommendationOut
 # (name, start, end) tuples is a far smaller, lower-risk surface than
 # adding a second cross-package dependency for it. If these ever need to
 # diverge or be centrally configurable, that's a natural Phase 6 follow-up.
-_DEFAULT_RANGES = {
+#
+# Reused as-is (not duplicated) by Phase 8A's allocation_service.py --
+# see docs/phase8a_allocation_audit.md §1. Exported (not prefixed `_`)
+# specifically so allocation_service.py can validate a request's `purpose`
+# against the same known-purpose set without a second list to keep in sync.
+DEFAULT_RANGES = {
     "frontend": (3000, 3999),
     "api": (8000, 8999),
     "postgres": (5432, 5499),
@@ -44,20 +50,33 @@ _DEFAULT_RANGES = {
 }
 
 
-def suggest_port(
-    db: Session, host_id: uuid.UUID, service_type: str, protocol: str = "tcp"
-) -> CentralRecommendationOut:
-    port_range = _DEFAULT_RANGES.get(service_type)
+@dataclass
+class CandidateSearchResult:
+    port: Optional[int]
+    candidates_considered: int
+    excluded: List[int] = field(default_factory=list)
+
+
+def find_available_port(
+    db: Session,
+    host_id: uuid.UUID,
+    service_type: str,
+    protocol: str = "tcp",
+    exclude_ports: FrozenSet[int] = frozenset(),
+) -> CandidateSearchResult:
+    """The one candidate-search implementation shared by the recommendation
+    endpoint (`suggest_port` below) and Phase 8A's allocation bundle
+    (`services/allocation_service.py`) -- see
+    docs/phase8a_allocation_audit.md §1 for why this must not be
+    duplicated. Excludes ports currently occupied (`CurrentPortObservation`)
+    or already reserved (`CentralReservation`) for this host, plus any
+    caller-supplied `exclude_ports` (allocation uses this for ports already
+    claimed by an earlier item in the same in-progress bundle, which are
+    not yet committed/visible to a fresh query).
+    """
+    port_range = DEFAULT_RANGES.get(service_type)
     if port_range is None:
-        return CentralRecommendationOut(
-            service_type=service_type,
-            protocol=protocol,
-            recommended_port=None,
-            verification="central_suggestion",
-            basis=f"Unknown service type '{service_type}'.",
-            candidates_considered=0,
-            known_conflicts_excluded=[],
-        )
+        return CandidateSearchResult(port=None, candidates_considered=0, excluded=[])
 
     start, end = port_range
     port_repo = PortRepository(db)
@@ -74,15 +93,35 @@ def suggest_port(
         if start <= reservation.port <= end and reservation.protocol.value == protocol:
             reserved_ports.add(reservation.port)
 
+    unavailable = occupied_ports | reserved_ports | exclude_ports
     excluded = sorted(occupied_ports | reserved_ports)
 
     recommended: Optional[int] = None
     considered = 0
     for candidate in range(start, end + 1):
         considered += 1
-        if candidate not in occupied_ports and candidate not in reserved_ports:
+        if candidate not in unavailable:
             recommended = candidate
             break
+
+    return CandidateSearchResult(port=recommended, candidates_considered=considered, excluded=excluded)
+
+
+def suggest_port(
+    db: Session, host_id: uuid.UUID, service_type: str, protocol: str = "tcp"
+) -> CentralRecommendationOut:
+    if service_type not in DEFAULT_RANGES:
+        return CentralRecommendationOut(
+            service_type=service_type,
+            protocol=protocol,
+            recommended_port=None,
+            verification="central_suggestion",
+            basis=f"Unknown service type '{service_type}'.",
+            candidates_considered=0,
+            known_conflicts_excluded=[],
+        )
+
+    result = find_available_port(db, host_id, service_type, protocol)
 
     basis = (
         "Based on the most recently reported state and reservations on file for this host in the central "
@@ -94,9 +133,9 @@ def suggest_port(
     return CentralRecommendationOut(
         service_type=service_type,
         protocol=protocol,
-        recommended_port=recommended,
+        recommended_port=result.port,
         verification="central_suggestion",
         basis=basis,
-        candidates_considered=considered,
-        known_conflicts_excluded=excluded,
+        candidates_considered=result.candidates_considered,
+        known_conflicts_excluded=result.excluded,
     )
