@@ -69,6 +69,9 @@ from .manifest import ManifestError, load_and_validate_manifest
 from .project_adapter import build_candidate_preview, build_normalized_request, resolve_host_ref, to_allocation_body
 from . import config_manager as _config_manager
 from .config_files import ConfigPathError as _ConfigPathError
+from .agent_contract import build_contract
+from .workflow import WorkflowError, apply_workflow, get_workflow_status, prepare_workflow
+from .project_init import create_manifest, render_manifest
 
 _MIN_COLUMN_WIDTH = 8
 _COLUMN_GAP = 2
@@ -1027,6 +1030,56 @@ def _cmd_project_allocate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_project_init(args):
+    try:
+        if args.stdout:
+            text = render_manifest(args.project, args.host, args.port)
+            print(json.dumps({"created": False, "manifest": text}, indent=2) if args.json else text, end=None if args.json else "")
+            return 0
+        from pathlib import Path
+        path = create_manifest(args.project, args.host, args.port, Path(args.output) if args.output else None)
+    except ManifestError as exc:
+        _print_manifest_error(exc, args); return 2
+    print(json.dumps({"created": True, "path": str(path.resolve())}, indent=2) if args.json else f"Created {path}"); return 0
+
+
+def _print_workflow_error(error, args):
+    payload={"error":{"code":error.code,"message":error.message,"details":error.details,"recovery":error.recovery}}
+    print(json.dumps(payload,indent=2)) if args.json else print(f"Error [{error.code}]: {error.message}",file=sys.stderr)
+
+
+def _workflow_project_root(args):
+    from pathlib import Path
+    from .manifest import discover_manifest_path
+    if getattr(args,"project_root",None): return Path(args.project_root)
+    path=_project_manifest_path(args) or discover_manifest_path()
+    return path.parent if path else Path.cwd()
+
+
+def _cmd_agent_contract(args):
+    print(json.dumps(build_contract(),indent=2)); return 0
+
+
+def _cmd_workflow_prepare(args):
+    client,manifest,host,error=_load_manifest_and_host(args)
+    if error is not None: return error
+    result=prepare_workflow(client,manifest,host,_workflow_project_root(args)); print(json.dumps(result,indent=2)); return 0 if result["ready"] else 1
+
+
+def _cmd_workflow_apply(args):
+    client,manifest,host,error=_load_manifest_and_host(args)
+    if error is not None: return error
+    try: result=apply_workflow(client,manifest,host,_workflow_project_root(args),args.request_id)
+    except WorkflowError as exc: _print_workflow_error(exc,args); return 1
+    print(json.dumps(result,indent=2)); return 0
+
+
+def _cmd_workflow_status(args):
+    try: result=get_workflow_status(_workflow_project_root(args),args.request_id)
+    except WorkflowError as exc: _print_workflow_error(exc,args); return 1
+    print(json.dumps(result,indent=2)); return 0
+
+
 # ---------------------------------------------------------------------------
 # Phase 8C: safe config plan/apply/status/rollback -- maps a committed
 # Phase 8A allocation into explicitly-declared project config files
@@ -1475,6 +1528,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     project_allocate_parser.add_argument("--format", type=str, default="text", choices=["text", "env"])
     project_allocate_parser.set_defaults(func=_cmd_project_allocate)
+    project_init_parser = project_subparsers.add_parser("init", help="Create a starter manifest without overwriting")
+    project_init_parser.add_argument("--project", required=True); project_init_parser.add_argument("--host", required=True)
+    project_init_parser.add_argument("--port", action="append", required=True, metavar="NAME:PURPOSE[:PROTOCOL]")
+    project_init_parser.add_argument("--output"); project_init_parser.add_argument("--stdout", action="store_true"); project_init_parser.add_argument("--json", action="store_true")
+    project_init_parser.set_defaults(func=_cmd_project_init)
 
     # --- Phase 8C: safe config plan/apply/status/rollback ------------------
     config_parser = subparsers.add_parser(
@@ -1525,6 +1583,11 @@ def build_parser() -> argparse.ArgumentParser:
     config_rollback_parser.add_argument("--project-root", type=str, default=None)
     config_rollback_parser.add_argument("--json", action="store_true")
     config_rollback_parser.set_defaults(func=_cmd_config_rollback)
+    contract_parser=subparsers.add_parser("agent-contract"); contract_parser.add_argument("--json",action="store_true"); contract_parser.set_defaults(func=_cmd_agent_contract)
+    workflow_parser=subparsers.add_parser("workflow"); workflow_subparsers=workflow_parser.add_subparsers(dest="workflow_command",required=True)
+    workflow_prepare=workflow_subparsers.add_parser("prepare"); _add_manifest_arg(workflow_prepare); workflow_prepare.add_argument("--project-root"); workflow_prepare.set_defaults(func=_cmd_workflow_prepare)
+    workflow_apply=workflow_subparsers.add_parser("apply"); _add_manifest_arg(workflow_apply); workflow_apply.add_argument("--request-id",required=True); workflow_apply.add_argument("--project-root"); workflow_apply.set_defaults(func=_cmd_workflow_apply)
+    workflow_status=workflow_subparsers.add_parser("status"); workflow_status.add_argument("--request-id",required=True); workflow_status.add_argument("--project-root"); workflow_status.add_argument("--json",action="store_true"); workflow_status.set_defaults(func=_cmd_workflow_status)
 
     from .cli_agent import add_agent_subparsers
     add_agent_subparsers(subparsers)

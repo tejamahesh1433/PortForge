@@ -1,0 +1,14 @@
+{
+  "contract_version": 1,
+  "provider_neutral": true,
+  "commands": {
+    "discover": "portforge agent-contract --json",
+    "init": "portforge project init --project <name> --host <host> --port <name>:<purpose>[:protocol]",
+    "validate": "portforge project validate [manifest] --json",
+    "prepare": "portforge workflow prepare [manifest] --json",
+    "apply": "portforge workflow apply [manifest] --request-id <stable-id> --json",
+    "status": "portforge workflow status --request-id <stable-id> --project-root <dir> --json"
+  },
+  "lifecycle": ["validate", "prepare", "apply", "status", "rollback-config-if-needed", "release-allocation"],
+  "rules": ["reuse request IDs only with unchanged input", "consume returned ports", "rollback config before release"]
+}

@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import config_manager as cm
-from .config_files import atomic_write, read_file_bytes
+from .config_files import ConfigPathError, atomic_write, read_file_bytes
 from .manifest import ManifestPortRequest, ProjectManifest
 from .project_adapter import NormalizedHostRef, build_candidate_preview, build_normalized_request, to_allocation_body
 
@@ -52,7 +52,8 @@ class WorkflowError(Exception):
 
 
 def _workflow_dir(project_root: Path, request_id: str) -> Path:
-    return project_root / WORKFLOWS_DIR_NAME / "workflows" / request_id
+    safe_key = hashlib.sha256(request_id.encode("utf-8")).hexdigest()
+    return project_root / WORKFLOWS_DIR_NAME / "workflows" / safe_key
 
 
 def _hash_manifest_for_workflow(manifest: ProjectManifest) -> str:
@@ -231,7 +232,8 @@ def apply_workflow(client, manifest: ProjectManifest, host: NormalizedHostRef, p
                 f"request_id '{request_id}' was already used with a materially different manifest/config.",
                 details=[{"request_id": request_id}],
             )
-        if existing["status"] in ("ALLOCATED", "APPLIED"):
+        has_config = manifest.config is not None and bool(manifest.config.dotenv or manifest.config.compose)
+        if existing["status"] == "APPLIED" or (existing["status"] == "ALLOCATED" and not has_config):
             # Pure replay -- touches neither Central nor any project file.
             return _result_from_record(existing)
         # status is FAILED (a prior attempt didn't finish cleanly) -- fall
@@ -273,6 +275,8 @@ def apply_workflow(client, manifest: ProjectManifest, host: NormalizedHostRef, p
 
     allocation_data = alloc_result.data
     allocation_id = allocation_data["allocation_id"]
+    if allocation_data.get("idempotent_replay") is True:
+        created_by_this_attempt = False
 
     # Phase 8A's OWN idempotency (frozen, never redesigned here) matches
     # purely on request_id + payload hash -- it returns the SAME
@@ -319,11 +323,11 @@ def apply_workflow(client, manifest: ProjectManifest, host: NormalizedHostRef, p
         "created_at": (existing or {}).get("created_at", datetime.now(timezone.utc).isoformat()),
     }
 
+    allocated_record = _save_workflow_record(
+        project_root, {**base_record, "status": "ALLOCATED", "mutation_id": None, "config_applied": False}
+    )
     if manifest.config is None or (not manifest.config.dotenv and not manifest.config.compose):
-        record = _save_workflow_record(
-            project_root, {**base_record, "status": "ALLOCATED", "mutation_id": None, "config_applied": False}
-        )
-        return _result_from_record(record)
+        return _result_from_record(allocated_record)
 
     mutation_id: Optional[str] = None
     try:
@@ -331,7 +335,9 @@ def apply_workflow(client, manifest: ProjectManifest, host: NormalizedHostRef, p
         cm.persist_plan(plan, project_root)
         mutation_id = plan.mutation_id
         cm.apply_mutation(project_root, mutation_id)
-    except cm.ConfigError as exc:
+    except (cm.ConfigError, ConfigPathError) as exc:
+        if isinstance(exc, ConfigPathError):
+            exc = cm.ConfigError("CONFIG_PATH_OUTSIDE_PROJECT", str(exc), status_code=400)
         compensation_actions = _compensate(client, project_root, mutation_id, allocation_id, created_by_this_attempt)
         _save_workflow_record(
             project_root,

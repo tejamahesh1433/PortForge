@@ -10,19 +10,23 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..schemas.allocation import AllocationIn, AllocationOut
+from ..repositories.allocation_repository import AllocationRepository
 from ..services import allocation_service
 
 router = APIRouter(prefix="/allocations", tags=["allocations"])
 
 
-@router.post("", response_model=AllocationOut, status_code=201)
-def create_allocation(payload: AllocationIn, db: Session = Depends(get_db)) -> AllocationOut:
-    return allocation_service.create_allocation(db, payload)
+@router.post("", response_model=AllocationOut)
+def create_allocation(payload: AllocationIn, response: Response, db: Session = Depends(get_db)) -> AllocationOut:
+    existing = AllocationRepository(db).get_by_request_id(payload.request_id) if payload.request_id else None
+    result = allocation_service.create_allocation(db, payload)
+    response.status_code = 200 if existing is not None else 201
+    return result.model_copy(update={"idempotent_replay": existing is not None})
 
 
 @router.get("/{allocation_id}", response_model=AllocationOut)

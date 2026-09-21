@@ -1,0 +1,8 @@
+version: 1
+project: robust_1608efa7
+target:
+  host: NTMKEYA
+ports:
+  api:
+    purpose: api
+    protocol: tcp

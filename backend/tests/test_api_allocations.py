@@ -202,7 +202,9 @@ def test_idempotent_replay_returns_existing_allocation(client: TestClient, enrol
     second = _allocate(client, enrolled_host.id, payload_requests, request_id="task-123")
 
     assert first.status_code == 201
-    assert second.status_code == 201
+    assert second.status_code in (200, 201)
+    assert first.json()["idempotent_replay"] is False
+    assert second.json()["idempotent_replay"] is True
     assert first.json()["allocation_id"] == second.json()["allocation_id"]
     assert first.json()["allocations"][0]["port"] == second.json()["allocations"][0]["port"]
 

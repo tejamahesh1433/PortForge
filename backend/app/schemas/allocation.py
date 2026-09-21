@@ -94,6 +94,7 @@ class AllocationValidationOut(ApiModel):
 
 
 class AllocationOut(ApiModel):
+    idempotent_replay: bool = False
     allocation_id: uuid.UUID
     project: str
     host: AllocationHostOut
