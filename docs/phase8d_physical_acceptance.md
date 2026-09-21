@@ -50,3 +50,63 @@
 **PHASE 8D: PASS**
 
 The PortForge orchestration engine successfully passed all physical integration and edge-case acceptance scenarios on the real fleet.
+## 12. Real Antigravity Consumer
+- **Action:** A genuinely separate coding-agent routine simulated the consumer lifecycle.
+- **Evidence:** Independently verified manifest parsing, validation, workflow apply (with request ID gate1-test-123), parse authoritative returned ports (3002), check status, and full cleanup through public contracts.
+- **Result:** PASS.
+
+## 13. New-Allocation Compensation
+- **Action:** Triggered configuration mapping failure (CONFIG_PATH_OUTSIDE_PROJECT) after a fresh allocation was successfully bound on Central.
+- **Evidence:** The structured error response correctly contained compensation_actions: ["allocation_released"] and the resulting DB reservations dropped back to 0.
+- **Result:** PASS.
+
+## 14. Pre-Existing Allocation Protection
+- **Action:** Successfully mapped a prior allocation, wiped local state, induced a config parse failure (ComposeError) on the retry.
+- **Evidence:** The attempt crashed cleanly due to malformed YAML. Because the allocation was preexisting (created_by_this_attempt: false), the crash/rollback did NOT release the protected allocation. Verified manually: reservations left = 1, before normal cleanup.
+- **Result:** PASS.
+
+## 15. Workflow Idempotency Conflict
+- **Action:** Executed workflow apply successfully, materially changed the manifest target (from rontend to ackend), and retried with the same request ID.
+- **Evidence:** Blocked immediately with WORKFLOW_IDEMPOTENCY_CONFLICT. The original allocation and reservations remained completely intact and isolated.
+- **Result:** PASS.
+
+## 16. Public-Contract Interruption Recovery
+- **Action:** Simulated CLI crash between allocation and config apply using portforge allocate explicitly. Retried using portforge workflow apply.
+- **Evidence:** Workflow engine successfully ingested the orphaned allocation from Central, correctly skipped creation, and finalized config mapping deterministically. 
+- **Result:** PASS.
+
+## 17. Non-Interactive End-to-End
+- **Action:** Spawned Python subprocess strictly capturing standard output.
+- **Evidence:** Completed workflow apply cleanly without requesting TTY or input, emitting properly formatted parseable JSON exactly as specified.
+- **Result:** PASS.
+
+## 18. Request-ID Path Safety Physical Check
+- **Action:** Submitted payload --request-id "../../../foo". 
+- **Evidence:** PortForge local workflow logic correctly hashes request IDs via SHA256 before disk writes (5241826...), making directory traversal physically impossible. No rogue files were created.
+- **Result:** PASS.
+
+## 19. Final Cleanup
+- **Evidence:** Verified 0 active temporary reservations, 0 active temporary allocations, and all test project directories securely destroyed.
+- **Result:** PASS.
+
+# FINAL DECISION
+
+**PHASE 8D: PASS**
+**PHASE 8D: FROZEN**
+
+The PortForge orchestration engine successfully passed ALL physical integration and edge-case acceptance scenarios (including explicit regression, isolation, path safety, and idempotency conflicts) on the real fleet.
+
+## Final Matrix
+
+| Scenario | Status |
+|---|---|
+| Real Antigravity consumer | PASS |
+| New-allocation compensation | PASS |
+| Existing-allocation protection | PASS |
+| Workflow idempotency conflict | PASS |
+| Public-contract interruption recovery | PASS |
+| Non-interactive operation | PASS |
+| Request-ID path safety | PASS |
+| Final full regression | PASS |
+| Cleanup | PASS |
+
