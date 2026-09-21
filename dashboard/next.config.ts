@@ -4,6 +4,8 @@ const nextConfig: NextConfig = {
   // Completely disable ETags to prevent 304 Not Modified responses
   generateEtags: false,
   reactStrictMode: true,
+  output: "standalone",
+
   
   // Force a unique build ID so new builds invalidate the cache
   generateBuildId: async () => {
