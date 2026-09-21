@@ -39,7 +39,7 @@ def _enroll_via_api(client) -> tuple[str, str]:
             "operating_system": "windows",
             "os_version": "10",
             "architecture": "x86_64",
-            "agent_version": "0.1.0",
+            "agent_version": "1.0.0",
             "docker_available": True,
         },
     )

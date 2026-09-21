@@ -165,7 +165,7 @@ def _heartbeat(client: TestClient, headers: dict, host_id: str):
             "operating_system": "linux",
             "os_version": None,
             "architecture": None,
-            "agent_version": "0.1.0",
+            "agent_version": "1.0.0",
             "docker_available": False,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         },

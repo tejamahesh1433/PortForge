@@ -12,3 +12,4 @@ credentials.json
 runtime_state.json
 reservations.json
 reservations.yml
+scratch/

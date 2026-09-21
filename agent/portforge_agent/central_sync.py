@@ -23,7 +23,7 @@ from .models import DiscoveredPort
 from .paths import reservations_path as default_reservations_path
 from .reservations.storage import ReservationStorageError, ReservationStore
 
-AGENT_VERSION = "0.1.0"
+AGENT_VERSION = "1.0.0"
 
 
 def _observation_dict(port: DiscoveredPort) -> dict:

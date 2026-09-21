@@ -71,7 +71,7 @@ class AgentRuntime:
                     operating_system=pf.detect_os().value,
                     os_version=pf.get_os_version(),
                     architecture=platform.machine(),
-                    agent_version="0.1.0",
+                    agent_version="1.0.0",
                     docker_available=docker_available,
                     timestamp=datetime.now(timezone.utc).isoformat()
                 )

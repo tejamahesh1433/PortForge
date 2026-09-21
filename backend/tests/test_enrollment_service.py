@@ -18,7 +18,7 @@ def _enroll(db, raw_token, host_id=None):
         operating_system="windows",
         os_version="10",
         architecture="x86_64",
-        agent_version="0.1.0",
+        agent_version="1.0.0",
         docker_available=True,
     )
 

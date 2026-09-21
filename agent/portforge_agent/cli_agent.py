@@ -31,7 +31,7 @@ def _cmd_agent_enroll(args: argparse.Namespace) -> int:
         operating_system=os_enum.value,
         os_version=None,
         architecture=None,
-        agent_version="0.1.0",
+        agent_version="1.0.0",
         docker_available=is_docker_available()
     )
     
@@ -85,7 +85,7 @@ def _cmd_agent_test(args: argparse.Namespace) -> int:
         operating_system=pf.detect_os().value,
         os_version=None,
         architecture=None,
-        agent_version="0.1.0",
+        agent_version="1.0.0",
         docker_available=is_docker_available(),
         timestamp="2026-01-01T00:00:00Z"
     )
@@ -157,7 +157,7 @@ def _cmd_agent_status(args: argparse.Namespace) -> int:
     print(f"Host UUID: {pf.get_host_id()}")
     print(f"Hostname: {pf.get_hostname()}")
     print(f"OS: {pf.detect_os().value}")
-    print(f"Agent Version: 0.1.0")
+    print(f"Agent Version: 1.0.0")
     print(f"Protocol Version: v1")
     print(f"Central URL: {config.url if config.url else 'None'}")
     
