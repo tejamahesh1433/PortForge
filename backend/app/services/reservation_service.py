@@ -37,7 +37,10 @@ from typing import List, Optional
 from sqlalchemy.orm import Session
 
 from ..models.reservation import CentralReservation
+from ..models.activity import ActivityEvent
 from ..repositories.reservation_repository import ReservationRepository
+from ..repositories.activity_repository import ActivityRepository
+from datetime import datetime, timezone
 
 
 class ReservationConflictError(Exception):
@@ -87,6 +90,21 @@ def create_reservation(
         local_reservation_id=local_reservation_id,
     )
     repo.add(reservation)
+    activity_repo = ActivityRepository(db)
+    activity_repo.add(
+        ActivityEvent(
+            host_id=host_id,
+            timestamp=datetime.now(timezone.utc),
+            event_type="RESERVATION_CREATED",
+            port=port,
+            protocol=protocol,
+            bind_address=bind_address,
+            reservation_id=reservation.id,
+            identity_context=project,
+            summary=f"Port {port}/{protocol} reserved for project '{project}'",
+        )
+    )
+
     db.commit()
     db.refresh(reservation)
     return reservation
@@ -102,6 +120,22 @@ def delete_reservation(db: Session, host_id: uuid.UUID, reservation_id: uuid.UUI
     if reservation is None or reservation.host_id != host_id:
         return False
     repo.delete(reservation)
+    
+    activity_repo = ActivityRepository(db)
+    activity_repo.add(
+        ActivityEvent(
+            host_id=host_id,
+            timestamp=datetime.now(timezone.utc),
+            event_type="RESERVATION_RELEASED",
+            port=reservation.port,
+            protocol=reservation.protocol.value if hasattr(reservation.protocol, "value") else reservation.protocol,
+            bind_address=reservation.bind_address,
+            reservation_id=reservation.id,
+            identity_context=reservation.project,
+            summary=f"Reservation released for port {reservation.port}/{reservation.protocol.value if hasattr(reservation.protocol, 'value') else reservation.protocol} (project '{reservation.project}')",
+        )
+    )
+
     db.commit()
     return True
 

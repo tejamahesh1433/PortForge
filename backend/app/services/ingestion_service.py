@@ -123,6 +123,8 @@ from ..models.port_observation import CurrentPortObservation, PortObservationEve
 from ..models.scan import Scan
 from ..repositories.host_repository import HostRepository
 from ..repositories.port_repository import PortRepository
+from ..repositories.activity_repository import ActivityRepository
+from ..models.activity import ActivityEvent
 from ..schemas.agent import ObservationIn
 
 
@@ -358,10 +360,13 @@ def ingest_snapshot(
     canonical_observations, duplicates_merged = _canonicalize_observations(observations)
 
     port_repo = PortRepository(db)
+    activity_repo = ActivityRepository(db)
     current_rows = {
         (row.port, row.protocol.value, row.bind_address): row for row in port_repo.list_current_for_host(host_id)
     }
     incoming_keys = {_binding_key(obs) for obs in canonical_observations}
+    
+    is_baseline = host.last_scan_observed_at is None
 
     appeared = changed = disappeared = 0
 
@@ -412,6 +417,21 @@ def ingest_snapshot(
                     occurred_at=observed_at,
                 )
             )
+            if not is_baseline:
+                activity_repo.add(
+                    ActivityEvent(
+                        host_id=host_id,
+                        timestamp=observed_at,
+                        event_type="PORT_APPEARED",
+                        port=obs.port,
+                        protocol=obs.protocol,
+                        bind_address=obs.bind_address,
+                        source=obs.source.value if hasattr(obs.source, "value") else obs.source,
+                        identity_context=obs.process_name or obs.container_name or obs.project_name or "unknown",
+                        metadata_json={"project_name": obs.project_name} if obs.project_name else None,
+                        summary=f"Port {obs.port}/{obs.protocol} appeared (source: {obs.source.value if hasattr(obs.source, 'value') else obs.source})",
+                    )
+                )
             appeared += 1
         else:
             if _meaningfully_changed(existing, obs):
@@ -467,6 +487,20 @@ def ingest_snapshot(
                     purpose=row.purpose,
                     scan_id=scan_id,
                     occurred_at=observed_at,
+                )
+            )
+            activity_repo.add(
+                ActivityEvent(
+                    host_id=host_id,
+                    timestamp=observed_at,
+                    event_type="PORT_DISAPPEARED",
+                    port=row.port,
+                    protocol=row.protocol,
+                    bind_address=row.bind_address,
+                    source=row.source.value if hasattr(row.source, "value") else row.source,
+                    identity_context=row.process_name or row.container_name or row.project_name or "unknown",
+                    metadata_json={"project_name": row.project_name} if row.project_name else None,
+                    summary=f"Port {row.port}/{row.protocol.value if hasattr(row.protocol, 'value') else row.protocol} disappeared",
                 )
             )
             port_repo.delete_current(row)

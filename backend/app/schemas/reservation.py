@@ -25,6 +25,15 @@ class ReservationIn(ApiModel):
     local_reservation_id: Optional[str] = Field(default=None, max_length=64)
 
 
+class DashboardReservationIn(ReservationIn):
+    """Request body for POST /api/reservations/dashboard (unauthenticated UI endpoint).
+    Unlike agent creation, the dashboard manages multiple hosts and must
+    explicitly provide the host_id.
+    """
+
+    host_id: uuid.UUID
+
+
 class ReservationOut(ApiModel):
     id: uuid.UUID
     host_id: uuid.UUID

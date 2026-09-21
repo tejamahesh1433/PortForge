@@ -111,3 +111,6 @@ This project is built incrementally, one phase at a time. Each phase is
 implemented for real (no stubs pretending to be functional), tested, and
 documented before the next phase begins. See each subdirectory's README for
 phase-specific status.
+
+
+claude --resume 27cc0b6d-73c3-4511-8586-6b9174596e74

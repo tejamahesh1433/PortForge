@@ -1,8 +1,18 @@
-"""Central reservations: read (public) + agent-authenticated write/sync.
+"""Central reservations: read (public) + agent-authenticated write/sync +
+dashboard-initiated write.
 
-POST/DELETE always act on the *authenticated* agent's own host_id -- there
-is no host_id in the write request bodies, so one agent's credential can
-never create or delete a reservation on another host's behalf.
+Agent POST/DELETE always act on the *authenticated* agent's own host_id --
+there is no host_id in those write request bodies, so one agent's credential
+can never create or delete a reservation on another host's behalf.
+
+The /dashboard write routes are unauthenticated by design: PortForge runs as
+a trusted private/LAN control plane (no login/session/token architecture is
+in scope -- see docs/phase7c4_ux_audit.md and the Phase 7C.4 acceptance
+task), so any client reaching Central can drive a dashboard-initiated
+reservation. This is distinct from agent enrollment (api/agents.py's
+`/enrollment-tokens`), which remains behind `require_admin` -- minting an
+agent credential is a different trust boundary than an already-trusted
+operator reserving a port through the dashboard.
 """
 from __future__ import annotations
 
@@ -14,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..schemas.common import Page
-from ..schemas.reservation import ReservationIn, ReservationOut
+from ..schemas.reservation import DashboardReservationIn, ReservationIn, ReservationOut
 from ..security.auth import AuthenticatedAgent, require_agent
 from ..services import reservation_service
 
@@ -66,6 +76,30 @@ def create_reservation(
     return ReservationOut.model_validate(_serializable(reservation))
 
 
+@router.post("/dashboard", response_model=ReservationOut, status_code=status.HTTP_201_CREATED)
+def create_reservation_dashboard(
+    payload: DashboardReservationIn,
+    db: Session = Depends(get_db),
+) -> ReservationOut:
+    try:
+        reservation = reservation_service.create_reservation(
+            db,
+            host_id=payload.host_id,
+            port=payload.port,
+            protocol=payload.protocol,
+            bind_address=payload.bind_address,
+            project=payload.project,
+            service=payload.service,
+            purpose=payload.purpose,
+            notes=payload.notes,
+            local_reservation_id=payload.local_reservation_id,
+        )
+    except reservation_service.ReservationConflictError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+
+    return ReservationOut.model_validate(_serializable(reservation))
+
+
 @router.delete("/{reservation_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
 def delete_reservation(
     reservation_id: uuid.UUID,
@@ -73,6 +107,17 @@ def delete_reservation(
     db: Session = Depends(get_db),
 ) -> None:
     deleted = reservation_service.delete_reservation(db, host_id=agent.host_id, reservation_id=reservation_id)
+    if not deleted:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Reservation not found.")
+
+
+@router.delete("/dashboard/{host_id}/{reservation_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
+def delete_reservation_dashboard(
+    host_id: uuid.UUID,
+    reservation_id: uuid.UUID,
+    db: Session = Depends(get_db),
+) -> None:
+    deleted = reservation_service.delete_reservation(db, host_id=host_id, reservation_id=reservation_id)
     if not deleted:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Reservation not found.")
 

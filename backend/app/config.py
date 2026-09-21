@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -53,6 +54,29 @@ class Settings(BaseSettings):
     # --- Ingestion limits ---------------------------------------------------
     max_observations_per_snapshot: int = 5000
     max_string_length: int = 4096
+
+    # --- CORS (Phase 7A dashboard) -------------------------------------------
+    # Comma-separated allowed origins for the Next.js dashboard's local dev
+    # server -- never a wildcard, and never hardcoded beyond this narrow,
+    # explicit, configurable default of the two equivalent local dev
+    # addresses. Empty string disables CORS entirely (no middleware
+    # installed -- see main.py), which is the right default for any
+    # deployment that doesn't need browser-based cross-origin access at all.
+    cors_allowed_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+
+    # --- Health & Diagnostics (Phase 7C.2) -----------------------------------
+    host_stale_after_seconds: int = 120
+    host_offline_after_seconds: int = 300
+
+    @model_validator(mode="after")
+    def check_health_thresholds(self) -> "Settings":
+        if self.host_stale_after_seconds >= self.host_offline_after_seconds:
+            raise ValueError("host_stale_after_seconds must be less than host_offline_after_seconds")
+        return self
+
+    @property
+    def cors_allowed_origins_list(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]
 
     @property
     def sqlalchemy_database_url(self) -> str:

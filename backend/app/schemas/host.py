@@ -19,3 +19,16 @@ class HostOut(ApiModel):
     first_seen: datetime
     last_seen: datetime
     status: str
+
+    # Derived health fields
+    health_state: str = "HEALTHY"
+    health_reason: str = "AGENT_HEALTHY"
+    age_seconds: int = 0
+    snapshot_age_seconds: Optional[int] = None
+
+
+class HostDiagnosticsOut(ApiModel):
+    host: HostOut
+    last_scan_observed_at: Optional[datetime]
+    stale_threshold_seconds: int
+    offline_threshold_seconds: int

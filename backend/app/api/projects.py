@@ -1,66 +1,44 @@
-"""GET /api/projects -- aggregates current observations by project_name.
-
-See schemas/project.py's module docstring for the deliberately
-conservative identity strategy: a "project" is a distinct project_name
-string, not a resolved cross-host entity.
-"""
+"""Operational project inventory and drill-down."""
 from __future__ import annotations
 
-from collections import defaultdict
-
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models.host import Host
-from ..repositories.port_repository import PortRepository
-from ..schemas.project import ProjectOut, ProjectServiceEntry
+from ..schemas.project import ProjectDetailOut, ProjectOut
+from ..services.project_service import get_project, list_projects
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
 @router.get("", response_model=list[ProjectOut])
-def list_projects(db: Session = Depends(get_db)) -> list[ProjectOut]:
-    port_repo = PortRepository(db)
-    project_names = port_repo.list_distinct_projects()
+def project_inventory(
+    limit: int = Query(default=200, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+) -> list[ProjectOut]:
+    return list_projects(db, limit=limit, offset=offset)
 
-    results: list[ProjectOut] = []
-    for name in project_names:
-        rows, _ = port_repo.query(project=name, limit=500)
-        # `query()` does a case-insensitive substring match; keep only
-        # exact matches here so e.g. "ocrforge" and "ocrforge-backup"
-        # don't get merged into one project entry.
-        rows = [r for r in rows if r.project_name == name]
-        if not rows:
-            continue
 
-        entries = []
-        hostnames = set()
-        for row in rows:
-            host = db.get(Host, row.host_id)
-            hostname = host.hostname if host else "unknown"
-            hostnames.add(hostname)
-            entries.append(
-                ProjectServiceEntry(
-                    host_id=row.host_id,
-                    hostname=hostname,
-                    port=row.port,
-                    protocol=row.protocol.value,
-                    service_name=row.service_name,
-                    purpose=row.purpose,
-                    category=row.category,
-                    state=row.state.value,
-                )
-            )
-
-        results.append(
-            ProjectOut(
-                project_name=name,
-                host_count=len(hostnames),
-                port_count=len(entries),
-                hosts=sorted(hostnames),
-                entries=entries,
-            )
-        )
-
-    return results
+@router.get("/{project_name}", response_model=ProjectDetailOut)
+def project_detail(
+    project_name: str,
+    port_limit: int = Query(default=200, ge=1, le=500),
+    port_offset: int = Query(default=0, ge=0),
+    reservation_limit: int = Query(default=100, ge=1, le=500),
+    reservation_offset: int = Query(default=0, ge=0),
+    activity_limit: int = Query(default=50, ge=1, le=200),
+    db: Session = Depends(get_db),
+) -> ProjectDetailOut:
+    project = get_project(
+        db,
+        project_name,
+        port_limit=port_limit,
+        port_offset=port_offset,
+        reservation_limit=reservation_limit,
+        reservation_offset=reservation_offset,
+        activity_limit=activity_limit,
+    )
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    return project

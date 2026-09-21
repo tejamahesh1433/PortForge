@@ -1,20 +1,15 @@
-"""Central project/service representation.
-
-Deliberately conservative identity strategy (per the project brief: "Do
-not over-engineer distributed project identity yet"): a "project" here is
-simply a distinct `project_name` string seen across current observations,
-aggregated with which hosts/ports/services currently report it. Two hosts
-using the same project name are treated as the same project for display
-purposes -- there is no separate Project table, UUID, or cross-host
-identity resolution. That's an intentional, documented simplification, not
-an oversight; see docs/architecture.md "Projects and services".
-"""
+"""Operational project summaries over existing host-scoped observations."""
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import List, Optional
 
-from .common import ApiModel
+from .activity import ActivityEventOut
+from .common import ApiModel, Page
+from .conflict import ConflictOut
+from .port import PortObservationOut
+from .reservation import ReservationOut
 
 
 class ProjectServiceEntry(ApiModel):
@@ -28,9 +23,38 @@ class ProjectServiceEntry(ApiModel):
     state: str
 
 
+class ProjectHostOut(ApiModel):
+    host_id: uuid.UUID
+    hostname: str
+    operating_system: str
+    docker_available: bool
+    health_state: str
+    health_reason: str
+    age_seconds: int
+    snapshot_age_seconds: Optional[int]
+    binding_count: int
+
+
 class ProjectOut(ApiModel):
     project_name: str
     host_count: int
     port_count: int
-    hosts: List[str]  # hostnames, for a quick human-readable summary
-    entries: List[ProjectServiceEntry]
+    process_count: int = 0
+    docker_binding_count: int = 0
+    container_count: int = 0
+    reservation_count: int = 0
+    conflict_count: int = 0
+    healthy_host_count: int = 0
+    stale_host_count: int = 0
+    offline_host_count: int = 0
+    last_activity: Optional[datetime] = None
+    hosts: List[str]
+    entries: List[ProjectServiceEntry] = []
+
+
+class ProjectDetailOut(ProjectOut):
+    host_details: List[ProjectHostOut]
+    ports: Page[PortObservationOut]
+    reservations: Page[ReservationOut]
+    conflicts: List[ConflictOut]
+    activity: List[ActivityEventOut]

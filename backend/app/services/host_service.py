@@ -10,8 +10,12 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
+from ..config import get_settings
 from ..models.host import Host
+from ..models.activity import ActivityEvent
 from ..repositories.host_repository import HostRepository
+from ..repositories.activity_repository import ActivityRepository
+from ..schemas.health_status import HostHealthState, derive_health_state
 
 
 def record_heartbeat(
@@ -26,6 +30,19 @@ def record_heartbeat(
     timestamp: datetime,
 ) -> Host:
     repo = HostRepository(db)
+    existing_host = repo.get(host_id)
+    
+    was_offline = True
+    if existing_host is not None:
+        settings = get_settings()
+        prev_state, _, _ = derive_health_state(
+            existing_host.last_seen,
+            settings.host_stale_after_seconds,
+            settings.host_offline_after_seconds,
+            timestamp,
+        )
+        was_offline = (prev_state == HostHealthState.OFFLINE) or (existing_host.status != "online")
+
     host = repo.upsert(
         host_id=host_id,
         hostname=hostname,
@@ -36,6 +53,19 @@ def record_heartbeat(
         docker_available=docker_available,
         now=timestamp,
     )
+
+    if was_offline:
+        activity_repo = ActivityRepository(db)
+        activity_repo.add(
+            ActivityEvent(
+                host_id=host_id,
+                timestamp=timestamp,
+                event_type="HOST_ONLINE",
+                identity_context=hostname,
+                summary=f"Host '{hostname}' came online",
+            )
+        )
+
     db.commit()
     db.refresh(host)
     return host

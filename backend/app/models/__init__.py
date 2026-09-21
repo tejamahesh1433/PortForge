@@ -17,6 +17,7 @@ from .host import Host
 from .port_observation import CurrentPortObservation, PortObservationEvent
 from .reservation import CentralReservation
 from .scan import Scan
+from .activity import ActivityEvent
 
 __all__ = [
     "Base",
@@ -27,4 +28,5 @@ __all__ = [
     "PortObservationEvent",
     "CentralReservation",
     "Scan",
+    "ActivityEvent",
 ]

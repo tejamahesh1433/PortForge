@@ -125,3 +125,57 @@ def test_reservation_validation_rejects_bad_protocol(client):
         json={"port": 8000, "protocol": "sctp", "project": "deeptrace"},
     )
     assert response.status_code == 422
+
+
+def test_create_and_delete_dashboard_reservation(client, db_session):
+    """The /dashboard write routes are deliberately unauthenticated (Phase
+    7C.4 acceptance): PortForge runs as a trusted private/LAN control plane
+    with no login/session/token architecture in scope, so a dashboard client
+    can create and release a reservation without any credential -- this is
+    a different trust boundary than agent enrollment (still require_admin;
+    see test_agents.py), which mints a durable per-host credential.
+    """
+    host_id = str(_make_host(db_session))
+
+    create_response = client.post(
+        "/api/reservations/dashboard",
+        json={"host_id": host_id, "port": 9000, "project": "ui-project"},
+    )
+    assert create_response.status_code == 201
+    reservation = create_response.json()
+    assert reservation["host_id"] == host_id
+    assert reservation["port"] == 9000
+
+    delete_response = client.delete(f"/api/reservations/dashboard/{host_id}/{reservation['id']}")
+    assert delete_response.status_code == 204
+
+    listed = client.get(f"/api/reservations?host_id={host_id}")
+    assert listed.json()["total"] == 0
+
+
+def test_dashboard_reservation_create_still_enforces_conflict_protection(client, db_session):
+    """Removing the admin-credential requirement must not weaken the
+    existing conflict/validation guarantees -- a second reservation for the
+    same host/port/protocol still 409s.
+    """
+    host_id = str(_make_host(db_session))
+    first = client.post(
+        "/api/reservations/dashboard",
+        json={"host_id": host_id, "port": 9100, "project": "ui-project-a"},
+    )
+    assert first.status_code == 201
+
+    second = client.post(
+        "/api/reservations/dashboard",
+        json={"host_id": host_id, "port": 9100, "project": "ui-project-b"},
+    )
+    assert second.status_code == 409
+
+
+def test_dashboard_reservation_create_still_validates_port(client, db_session):
+    host_id = str(_make_host(db_session))
+    response = client.post(
+        "/api/reservations/dashboard",
+        json={"host_id": host_id, "port": 99999, "project": "ui-project"},
+    )
+    assert response.status_code == 422
