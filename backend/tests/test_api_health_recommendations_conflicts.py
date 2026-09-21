@@ -22,6 +22,20 @@ def test_health_ok(client):
     assert body["service"] == "portforge"
 
 
+def test_health_exposes_protocol_version(client):
+    """v1.1-A: unauthenticated and always present, so `portforge doctor`
+    can compare it against the agent's own canonical protocol_version
+    without needing an enrolled credential first.
+    """
+    from app.services.compatibility_service import PROTOCOL_VERSION
+
+    response = client.get("/api/health")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["protocol_version"] == PROTOCOL_VERSION
+    assert isinstance(body["protocol_version"], int)
+
+
 def test_health_never_exposes_secrets(client):
     response = client.get("/api/health")
     text = response.text

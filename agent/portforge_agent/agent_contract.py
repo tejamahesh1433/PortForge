@@ -10,9 +10,8 @@ shape would be introduced, without silently changing what v1 promised.
 """
 from __future__ import annotations
 
-from importlib.metadata import PackageNotFoundError, version as _pkg_version
-
 from .manifest import MAX_PORTS_PER_MANIFEST, SUPPORTED_MANIFEST_VERSION
+from .version import PROTOCOL_VERSION, get_portforge_version
 
 CONTRACT_VERSION = 1
 
@@ -20,17 +19,11 @@ _KNOWN_PURPOSES = ("frontend", "api", "postgres", "mysql", "redis", "generic")
 _SUPPORTED_PROTOCOLS = ("tcp", "udp")
 
 
-def _portforge_version() -> str:
-    try:
-        return _pkg_version("portforge-agent")
-    except PackageNotFoundError:  # pragma: no cover - only if run from an unpackaged checkout
-        return "unknown"
-
-
 def build_contract() -> dict:
     return {
         "contract_version": CONTRACT_VERSION,
-        "portforge_version": _portforge_version(),
+        "portforge_version": get_portforge_version(),
+        "protocol_version": PROTOCOL_VERSION,
         "manifest_versions": [SUPPORTED_MANIFEST_VERSION],
         "max_ports_per_manifest": MAX_PORTS_PER_MANIFEST,
         "capabilities": {
@@ -45,6 +38,7 @@ def build_contract() -> dict:
             "workflow_prepare": True,
             "workflow_apply": True,
             "workflow_status": True,
+            "doctor": True,
         },
         # Informational only -- NOT authoritative. Central's own
         # INVALID_REQUEST error at allocation time is the real source of

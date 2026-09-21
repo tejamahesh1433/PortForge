@@ -14,6 +14,7 @@ from .collectors.docker import is_docker_available
 from .runtime.agent import AgentRuntime
 from .runtime.state import load_state
 from .runtime.sync import SyncManager
+from .version import PROTOCOL_VERSION, get_portforge_version
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,8 @@ def _cmd_agent_enroll(args: argparse.Namespace) -> int:
         operating_system=os_enum.value,
         os_version=None,
         architecture=None,
-        agent_version="1.0.0",
+        agent_version=get_portforge_version(),
+        protocol_version=PROTOCOL_VERSION,
         docker_available=is_docker_available()
     )
     
@@ -85,7 +87,8 @@ def _cmd_agent_test(args: argparse.Namespace) -> int:
         operating_system=pf.detect_os().value,
         os_version=None,
         architecture=None,
-        agent_version="1.0.0",
+        agent_version=get_portforge_version(),
+        protocol_version=PROTOCOL_VERSION,
         docker_available=is_docker_available(),
         timestamp="2026-01-01T00:00:00Z"
     )

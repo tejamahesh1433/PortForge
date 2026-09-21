@@ -31,11 +31,18 @@ class EnrollmentRequest(ApiModel):
     architecture: Optional[str] = Field(default=None, max_length=64)
     agent_version: Optional[str] = Field(default=None, max_length=64)
     docker_available: bool = False
+    # v1.1-A: additive, optional -- an omitted field (a v1.0 agent) is
+    # handled as "unknown" compatibility, never rejected. NOT persisted
+    # anywhere (no Host column) -- see services/compatibility_service.py.
+    protocol_version: Optional[int] = Field(default=None, ge=1)
 
 
 class EnrollmentResponse(ApiModel):
     host_id: uuid.UUID
     agent_token: str  # returned exactly once, at enrollment time -- never again
+    # v1.1-A: advisory only, "compatible" | "warning" | "unknown" -- see
+    # services/compatibility_service.py. Never gates enrollment.
+    protocol_compatibility: str = "unknown"
 
 
 class HeartbeatRequest(ApiModel):
@@ -47,12 +54,14 @@ class HeartbeatRequest(ApiModel):
     agent_version: Optional[str] = Field(default=None, max_length=64)
     docker_available: bool = False
     timestamp: datetime
+    protocol_version: Optional[int] = Field(default=None, ge=1)
 
 
 class HeartbeatResponse(ApiModel):
     host_id: uuid.UUID
     last_seen: datetime
     status: str
+    protocol_compatibility: str = "unknown"
 
 
 class ObservationIn(ApiModel):

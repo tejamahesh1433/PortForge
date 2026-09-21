@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..database import get_db
 from ..schemas.health import HealthOut, GlobalDiagnosticsOut
+from ..services.compatibility_service import PROTOCOL_VERSION
 
 router = APIRouter(tags=["health"])
 
@@ -29,6 +30,7 @@ def get_health(db: Session = Depends(get_db)) -> HealthOut:
         service="portforge",
         database=database_status,
         version=settings.version,
+        protocol_version=PROTOCOL_VERSION,
     )
 
 

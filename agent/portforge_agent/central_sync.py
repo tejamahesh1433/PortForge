@@ -22,8 +22,13 @@ from .discovery import discover_all_ports
 from .models import DiscoveredPort
 from .paths import reservations_path as default_reservations_path
 from .reservations.storage import ReservationStorageError, ReservationStore
+from .version import PROTOCOL_VERSION, get_portforge_version
 
-AGENT_VERSION = "1.0.0"
+# v1.1-A: derived from the canonical source (agent/pyproject.toml, read via
+# importlib.metadata) instead of a second, independently hardcoded literal
+# -- see docs/v1.1/architecture-audit.md §2 and version.py's own docstring
+# for why this used to be a real, if coincidental, duplication.
+AGENT_VERSION = get_portforge_version()
 
 
 def _observation_dict(port: DiscoveredPort) -> dict:
@@ -100,6 +105,7 @@ def sync_now(config: CentralConfig) -> SyncOutcome:
         agent_version=AGENT_VERSION,
         docker_available=True,
         timestamp=now.isoformat(),
+        protocol_version=PROTOCOL_VERSION,
     )
     if not heartbeat.success:
         return SyncOutcome(health=health, heartbeat=heartbeat, error="Heartbeat failed.")
@@ -158,6 +164,7 @@ def enroll(config_path, url: str, enrollment_token: str) -> CentralResult:
         architecture=None,
         agent_version=AGENT_VERSION,
         docker_available=True,
+        protocol_version=PROTOCOL_VERSION,
     )
     if not result.success:
         return result

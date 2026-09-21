@@ -69,6 +69,7 @@ from .manifest import ManifestError, load_and_validate_manifest
 from .project_adapter import build_candidate_preview, build_normalized_request, resolve_host_ref, to_allocation_body
 from . import config_manager as _config_manager
 from .config_files import ConfigPathError as _ConfigPathError
+from . import doctor as _doctor
 from .agent_contract import build_contract
 from .workflow import WorkflowError, apply_workflow, get_workflow_status, prepare_workflow
 from .project_init import create_manifest, render_manifest
@@ -1250,6 +1251,42 @@ def _cmd_config_rollback(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# v1.1-A: `portforge doctor` -- read-only diagnostic aggregator. See
+# doctor.py's own module docstring and docs/v1.1/doctor-design.md. Never
+# mutates anything; a missing/unreachable Central is SKIP, not a hard
+# argument error -- Central sync has always been optional (see
+# `_resolve_central_base_url`'s own identical `os` import + resolution
+# order, reused here for the exact same URL-resolution behavior every
+# other Central-aware command already has).
+# ---------------------------------------------------------------------------
+
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    from .central_client import CentralClient
+
+    url, _url_error = _resolve_central_base_url(args)
+    client = CentralClient(url) if url else None
+
+    report = _doctor.run_doctor(client=client)
+
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2))
+    else:
+        print("PortForge Doctor\n")
+        label_width = max(len(c.id) for c in report.checks) + 2
+        for c in report.checks:
+            marker = {"ok": "PASS", "warn": "WARN", "error": "FAIL", "skip": "SKIP"}[c.status]
+            print(f"  {c.id.ljust(label_width)} {marker:<5} {c.message}")
+        print(f"\nOverall: {report.overall}")
+
+    # 0 = ok/degraded (no blocking diagnostic failure); 1 = overall "error"
+    # (at least one check is a hard failure); 2 is reserved for a usage
+    # error, which argparse itself would already have raised before this
+    # function ever runs.
+    return 1 if report.overall == "error" else 0
+
+
+# ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
 
@@ -1588,6 +1625,14 @@ def build_parser() -> argparse.ArgumentParser:
     workflow_prepare=workflow_subparsers.add_parser("prepare"); _add_manifest_arg(workflow_prepare); workflow_prepare.add_argument("--project-root"); workflow_prepare.set_defaults(func=_cmd_workflow_prepare)
     workflow_apply=workflow_subparsers.add_parser("apply"); _add_manifest_arg(workflow_apply); workflow_apply.add_argument("--request-id",required=True); workflow_apply.add_argument("--project-root"); workflow_apply.set_defaults(func=_cmd_workflow_apply)
     workflow_status=workflow_subparsers.add_parser("status"); workflow_status.add_argument("--request-id",required=True); workflow_status.add_argument("--project-root"); workflow_status.add_argument("--json",action="store_true"); workflow_status.set_defaults(func=_cmd_workflow_status)
+
+    # --- v1.1-A: read-only diagnostic aggregator ---------------------------
+    doctor_parser = subparsers.add_parser(
+        "doctor", help="Read-only diagnostic check of CLI/Central/agent/manifest state -- never mutates anything"
+    )
+    doctor_parser.add_argument("--url", type=str, default=None, help="Central server base URL")
+    doctor_parser.add_argument("--json", action="store_true")
+    doctor_parser.set_defaults(func=_cmd_doctor)
 
     from .cli_agent import add_agent_subparsers
     add_agent_subparsers(subparsers)

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from ..central_client import CentralClient
 from ..central_config import load_central_config
 from ..credentials import load_credential
+from ..version import PROTOCOL_VERSION, get_portforge_version
 from .backoff import ExponentialBackoff
 from .state import load_state, save_state
 from .sync import SyncManager
@@ -71,9 +72,10 @@ class AgentRuntime:
                     operating_system=pf.detect_os().value,
                     os_version=pf.get_os_version(),
                     architecture=platform.machine(),
-                    agent_version="1.0.0",
+                    agent_version=get_portforge_version(),
                     docker_available=docker_available,
-                    timestamp=datetime.now(timezone.utc).isoformat()
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    protocol_version=PROTOCOL_VERSION,
                 )
                 if res.success:
                     last_heartbeat_time = time.time()

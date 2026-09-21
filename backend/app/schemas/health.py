@@ -8,6 +8,12 @@ class HealthOut(ApiModel):
     service: str
     database: str
     version: str
+    # v1.1-A: Central's own agent<->Central wire-protocol version --
+    # unauthenticated, always present, so `portforge doctor` (which may
+    # run on a host with no agent credential yet) can compare it against
+    # the agent's own canonical protocol_version without needing to
+    # enroll first. See services/compatibility_service.py.
+    protocol_version: int
 
 
 class GlobalDiagnosticsOut(ApiModel):

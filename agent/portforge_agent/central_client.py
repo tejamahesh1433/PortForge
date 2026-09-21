@@ -106,6 +106,7 @@ class CentralClient:
         architecture: Optional[str],
         agent_version: Optional[str],
         docker_available: bool,
+        protocol_version: Optional[int] = None,
     ) -> CentralResult:
         body = {
             "enrollment_token": enrollment_token,
@@ -117,6 +118,11 @@ class CentralClient:
             "agent_version": agent_version,
             "docker_available": docker_available,
         }
+        # v1.1-A: additive only -- omitted entirely (not sent as null) when
+        # unset, so an EnrollmentRequest built against the v1.0 schema
+        # still validates identically. See docs/v1.1/version-compatibility.md.
+        if protocol_version is not None:
+            body["protocol_version"] = protocol_version
         return self._request("POST", "/api/agent/enroll", body=body, authenticated=False)
 
     def heartbeat(
@@ -129,6 +135,7 @@ class CentralClient:
         agent_version: Optional[str],
         docker_available: bool,
         timestamp: str,
+        protocol_version: Optional[int] = None,
     ) -> CentralResult:
         body = {
             "host_id": host_id,
@@ -140,6 +147,8 @@ class CentralClient:
             "docker_available": docker_available,
             "timestamp": timestamp,
         }
+        if protocol_version is not None:
+            body["protocol_version"] = protocol_version
         return self._request("POST", "/api/agent/heartbeat", body=body)
 
     def submit_observations(

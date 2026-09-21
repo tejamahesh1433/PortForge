@@ -25,7 +25,7 @@ from ..schemas.agent import (
     SnapshotSubmission,
 )
 from ..security.auth import AuthenticatedAgent, require_admin, require_agent
-from ..services import enrollment_service, host_service, ingestion_service
+from ..services import compatibility_service, enrollment_service, host_service, ingestion_service
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 
@@ -67,7 +67,10 @@ def enroll(payload: EnrollmentRequest, db: Session = Depends(get_db)) -> Enrollm
     except enrollment_service.EnrollmentError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(exc)) from exc
 
-    return EnrollmentResponse(host_id=result.host_id, agent_token=result.agent_token)
+    # v1.1-A: advisory only -- computed from the request body alone, never
+    # persisted, never blocks enrollment (see services/compatibility_service.py).
+    compatibility = compatibility_service.evaluate_protocol_compatibility(payload.protocol_version)
+    return EnrollmentResponse(host_id=result.host_id, agent_token=result.agent_token, protocol_compatibility=compatibility)
 
 
 @router.post("/heartbeat", response_model=HeartbeatResponse)
@@ -90,7 +93,10 @@ def heartbeat(
         docker_available=payload.docker_available,
         timestamp=payload.timestamp,
     )
-    return HeartbeatResponse(host_id=host.id, last_seen=host.last_seen, status=host.status)
+    compatibility = compatibility_service.evaluate_protocol_compatibility(payload.protocol_version)
+    return HeartbeatResponse(
+        host_id=host.id, last_seen=host.last_seen, status=host.status, protocol_compatibility=compatibility
+    )
 
 
 @router.post("/observations", response_model=SnapshotResult)
