@@ -18,24 +18,52 @@ def credentials_path() -> Path:
     return paths.data_dir() / "credentials.json"
 
 
-def load_credential() -> Optional[str]:
-    """Loads the agent token, returning None if not found or invalid."""
-    path = credentials_path()
-    if not path.exists():
+def load_credential(path: Optional[Path] = None) -> Optional[str]:
+    """Loads the agent token, returning None if not found or invalid.
+
+    v1.1-E: falls back to `central.json`'s own embedded `token` field
+    (written by the older `central enroll` command -- see
+    `central_sync.py::enroll`'s docstring note) if `credentials.json` has
+    none. A host enrolled via `central enroll` before this fix has a
+    perfectly valid token sitting in `central.json` that the always-on
+    daemon has simply never looked at; this heals that case automatically,
+    on the very next read, with no re-enrollment required (task's
+    "enrollment preservation" requirement) -- and self-heals by writing
+    the recovered token into `credentials.json` too, so the fallback only
+    ever fires once per host. `path` overrides `credentials_path()`
+    for tests; the central.json fallback always uses the real default
+    location when `path` is overridden, since a test redirecting
+    credentials.json is asking for pure isolation, not a fallback belonging
+    to a different file entirely.
+    """
+    cred_path = path or credentials_path()
+    if cred_path.exists():
+        try:
+            data = json.loads(cred_path.read_text(encoding="utf-8"))
+            token = data.get("token")
+            if isinstance(token, str):
+                return token
+        except (OSError, ValueError):
+            pass
+
+    if path is not None:
         return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        token = data.get("token")
-        if isinstance(token, str):
-            return token
-    except (OSError, ValueError):
-        pass
+
+    from .central_config import load_central_config
+
+    legacy_token = load_central_config().token
+    if legacy_token:
+        try:
+            save_credential(legacy_token)
+        except OSError:
+            pass  # best-effort self-heal; the token is still usable this call
+        return legacy_token
     return None
 
 
-def save_credential(token: str) -> None:
+def save_credential(token: str, path: Optional[Path] = None) -> None:
     """Saves the agent token securely."""
-    path = credentials_path()
+    path = path or credentials_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     
     payload = json.dumps({"token": token}, indent=2)

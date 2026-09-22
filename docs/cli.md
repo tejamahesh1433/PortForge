@@ -17,10 +17,20 @@ The `portforge` command-line interface provides tools for discovery, reservation
 
 ## Setup Commands
 
-- `portforge central generate-token`: Generates a new enrollment token on the Central server.
-- `portforge enroll`: Enrolls the local agent with Central using a URL and token.
-  - Usage: `portforge enroll --central "http://central:8000" --token "<token>"`
-- `portforge agent install/start/stop/uninstall`: Controls the background OS service for the host agent.
+- `portforge central generate-token`: Mints a new host enrollment token. Admin-only -- requires the Central
+  host's `PORTFORGE_ADMIN_BOOTSTRAP_TOKEN` (env var preferred over `--admin-token`, to avoid shell history
+  exposure). The returned token is shown exactly once.
+  - Usage: `portforge central generate-token --url "http://central:58000" --label my-laptop`
+- `portforge agent enroll`: Enrolls the local agent daemon with Central using a URL and enrollment token. This
+  is the command a normal installation should use (writes the credential the always-on daemon actually reads).
+  - Usage: `portforge agent enroll --server "http://central:58000" --token "<token>"`
+- `portforge central enroll`: An older, separate one-off enrollment path used only by `portforge central
+  sync`/`status`. Still real, but does not configure the always-on agent daemon -- prefer `agent enroll` above.
+- `portforge agent service install/start/stop/status/uninstall`: Controls the native background OS service for
+  the host agent (Windows Task Scheduler / macOS LaunchAgent / Linux `systemctl --user`). `install` is
+  idempotent -- safe to re-run after an upgrade or config change.
+- `portforge doctor`: Read-only diagnostic check of CLI/Central/agent/manifest state -- the canonical
+  post-install verification gate. Never mutates anything. Supports `--url` and `--json`.
 - `portforge agent-contract`: Prints the JSON schema detailing the rules of engagement for AI Coding Agents.
 
 ## Advanced Allocations

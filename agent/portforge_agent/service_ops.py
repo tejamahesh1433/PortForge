@@ -23,6 +23,7 @@ other native service definition.
 """
 from __future__ import annotations
 
+import getpass
 import os
 import subprocess
 import time
@@ -336,6 +337,48 @@ def _uninstall_macos() -> ServiceOpResult:
 # ---------------------------------------------------------------------------
 
 
+def _linger_is_enabled(username: str) -> Optional[bool]:
+    """True/False if `loginctl show-user` answers definitively, None if the
+    query itself failed (e.g. loginctl unavailable) -- callers must treat
+    None as "unknown", never as "disabled".
+    """
+    result = _run(["loginctl", "show-user", username, "--property=Linger"])
+    if result.returncode != 0:
+        return None
+    return "linger=yes" in result.stdout.strip().lower()
+
+
+def _ensure_linger(username: str) -> str:
+    """v1.1-E (task Sec7/Sec26/Sec28): a `systemctl --user` unit only keeps
+    running while the user has an active login session UNLESS
+    `loginctl enable-linger` has been set for that user -- without it, the
+    agent silently stops at logout and never restarts at boot, exactly the
+    reliability gap a headless/server install needs to not have. Physical
+    validation found this already manually enabled on lenovoserver (from
+    earlier, undocumented setup) -- `agent service install` never did this
+    itself. Best-effort: enabling linger for one's OWN account works
+    without elevation on most systemd/polkit configurations, but some
+    locked-down systems restrict even that; a failure here is reported as
+    an informational note, never a reason to fail the whole install (the
+    unit itself is already correctly installed and will run for as long as
+    the session lasts either way).
+    """
+    already = _linger_is_enabled(username)
+    if already is True:
+        return "Linger already enabled for this account -- the service will survive logout/reboot."
+
+    result = _run(["loginctl", "enable-linger", username])
+    if result.returncode == 0:
+        return "Linger enabled for this account -- the service will now survive logout/reboot."
+    detail = (result.stderr or result.stdout or "").strip()
+    return (
+        "Could not enable linger for this account (needed for the service to survive logout/reboot on a "
+        f"headless host): {detail or 'loginctl enable-linger failed'}. The service will still run while you "
+        "stay logged in; ask an administrator to run "
+        f"'loginctl enable-linger {username}' for unattended/headless operation."
+    )
+
+
 def _install_linux() -> ServiceOpResult:
     unit_path = gen.systemd_unit_path()
     unit_path.parent.mkdir(parents=True, exist_ok=True)
@@ -349,15 +392,18 @@ def _install_linux() -> ServiceOpResult:
         )
 
     enable_result = _run(["systemctl", "--user", "enable", gen.SYSTEMD_UNIT_NAME])
-    if enable_result.returncode == 0:
+    if enable_result.returncode != 0:
         return ServiceOpResult(
-            True,
-            f"systemd user unit '{gen.SYSTEMD_UNIT_NAME}' installed and enabled at {unit_path}.",
-            detail=enable_result.stdout.strip(),
+            False, "Failed to enable systemd user unit.",
+            detail=(enable_result.stderr or enable_result.stdout).strip(),
+            returncode=enable_result.returncode,
         )
+
+    linger_note = _ensure_linger(getpass.getuser())
     return ServiceOpResult(
-        False, "Failed to enable systemd user unit.", detail=(enable_result.stderr or enable_result.stdout).strip(),
-        returncode=enable_result.returncode,
+        True,
+        f"systemd user unit '{gen.SYSTEMD_UNIT_NAME}' installed and enabled at {unit_path}.",
+        detail=f"{enable_result.stdout.strip()}\n{linger_note}".strip(),
     )
 
 

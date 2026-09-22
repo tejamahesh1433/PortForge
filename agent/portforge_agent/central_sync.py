@@ -159,6 +159,7 @@ def sync_now(config: CentralConfig) -> SyncOutcome:
 
 def enroll(config_path, url: str, enrollment_token: str) -> CentralResult:
     from .central_config import save_central_config
+    from .credentials import save_credential
 
     client = CentralClient(url, token=None)
     host_id = pf.get_host_id()
@@ -181,4 +182,24 @@ def enroll(config_path, url: str, enrollment_token: str) -> CentralResult:
         return CentralResult(success=False, error="Enrollment response did not include an agent token.")
 
     save_central_config(CentralConfig(enabled=True, url=url, token=agent_token), path=config_path)
+    # v1.1-E: `central enroll` and `agent enroll` are two separate CLI
+    # entry points for the same real operation, but historically only
+    # `agent enroll` wrote the token to credentials.json -- the ONLY store
+    # the always-on daemon (runtime/agent.py, which every installed
+    # service -- Task Scheduler/launchd/systemd -- actually runs) reads
+    # from. A host enrolled via `central enroll` alone would authenticate
+    # successfully for one-off `central sync`/`central status` calls (which
+    # read central.json's own embedded token) while the installed service
+    # silently failed every heartbeat with "Invalid or revoked agent
+    # credential" -- a real bug discovered during v1.1-D physical
+    # acceptance. Writing to both stores here makes either enroll command
+    # produce a fully-working installation; see credentials.py::load_credential
+    # for the read-side fallback that also heals hosts already enrolled
+    # via the old central-enroll-only behavior, without requiring
+    # re-enrollment. credentials.json is always this file's sibling in the
+    # same data directory (matches paths.data_dir()'s real layout), so a
+    # test redirecting config_path to an isolated temp central.json
+    # transparently redirects the credentials write too.
+    credentials_path_override = config_path.parent / "credentials.json" if config_path is not None else None
+    save_credential(agent_token, path=credentials_path_override)
     return CentralResult(success=True, status_code=result.status_code, data={"host_id": host_id})

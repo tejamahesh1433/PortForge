@@ -1315,6 +1315,46 @@ def _cmd_central_enroll(args: argparse.Namespace) -> int:
     return 0 if result.success else 1
 
 
+def _cmd_central_generate_token(args: argparse.Namespace) -> int:
+    """v1.1-E: docs/security.md has always claimed this command exists;
+    it never did -- only an unexposed backend endpoint
+    (`POST /agent/enrollment-tokens`, admin-only) did. This is a thin
+    wrapper around that EXISTING capability, not a new auth mechanism: it
+    still requires the real PORTFORGE_ADMIN_BOOTSTRAP_TOKEN and never logs
+    it. The env var is preferred over --admin-token to avoid the secret
+    landing in shell history.
+    """
+    import os
+
+    from .central_client import CentralClient
+
+    admin_token = args.admin_token or os.environ.get("PORTFORGE_ADMIN_BOOTSTRAP_TOKEN")
+    if not admin_token:
+        message = "No admin bootstrap token provided. Pass --admin-token or set PORTFORGE_ADMIN_BOOTSTRAP_TOKEN."
+        if args.json:
+            print(json.dumps({"success": False, "error": message}))
+        else:
+            print(message, file=sys.stderr)
+        return 1
+
+    client = CentralClient(args.url, token=admin_token)
+    result = client.generate_enrollment_token(label=args.label, ttl_hours=args.ttl_hours)
+
+    if args.json:
+        print(json.dumps({"success": result.success, "error": result.error, "data": result.data}, indent=2))
+    else:
+        if result.success:
+            data = result.data or {}
+            print("Enrollment token generated -- shown once, not retrievable again. Save it now:")
+            print(f"  {data.get('enrollment_token')}")
+            if data.get("expires_at"):
+                print(f"Expires: {data['expires_at']}")
+            print("Use it with: portforge agent enroll --server <url> --token <this token>")
+        else:
+            print(f"Failed to generate enrollment token: {result.error}", file=sys.stderr)
+    return 0 if result.success else 1
+
+
 def _cmd_central_status(args: argparse.Namespace) -> int:
     from .central_config import load_central_config
     from .central_sync import check_status
@@ -1480,6 +1520,21 @@ def build_parser() -> argparse.ArgumentParser:
     central_enroll_parser.add_argument("--enrollment-token", type=str, required=True)
     central_enroll_parser.add_argument("--json", action="store_true")
     central_enroll_parser.set_defaults(func=_cmd_central_enroll)
+
+    central_generate_token_parser = central_subparsers.add_parser(
+        "generate-token", help="Mint a new host enrollment token (admin-only -- requires the admin bootstrap token)"
+    )
+    central_generate_token_parser.add_argument("--url", type=str, required=True, help="Central server base URL")
+    central_generate_token_parser.add_argument(
+        "--admin-token",
+        type=str,
+        default=None,
+        help="Admin bootstrap token; prefer the PORTFORGE_ADMIN_BOOTSTRAP_TOKEN env var to avoid shell history exposure",
+    )
+    central_generate_token_parser.add_argument("--label", type=str, default=None)
+    central_generate_token_parser.add_argument("--ttl-hours", type=int, default=24)
+    central_generate_token_parser.add_argument("--json", action="store_true")
+    central_generate_token_parser.set_defaults(func=_cmd_central_generate_token)
 
     central_status_parser = central_subparsers.add_parser("status", help="Show central sync configuration/connectivity")
     central_status_parser.add_argument("--json", action="store_true")

@@ -541,6 +541,81 @@ def test_install_linux_writes_unit_reloads_and_enables(monkeypatch, tmp_path):
     assert calls[1] == ["systemctl", "--user", "enable", gen.SYSTEMD_UNIT_NAME]
 
 
+def test_install_linux_enables_linger_when_not_already_set(monkeypatch, tmp_path):
+    """v1.1-E: a systemd --user unit stops at logout and never restarts at
+    boot without linger -- install must enable it so a headless/server host
+    actually survives logout/reboot, not just while the installer's own
+    session stays open.
+    """
+    monkeypatch.setattr(pf, "detect_os", lambda: pf.OperatingSystem.LINUX)
+    monkeypatch.setattr(gen, "systemd_unit_path", lambda: tmp_path / "systemd" / "user" / gen.SYSTEMD_UNIT_NAME)
+    monkeypatch.setattr(service_ops.getpass, "getuser", lambda: "teja")
+
+    calls = []
+
+    def fake_run(args, timeout=15.0):
+        calls.append(args)
+        if args[:2] == ["loginctl", "show-user"]:
+            return _cp(0, "Linger=no\n")  # not yet enabled
+        return _cp(0)
+
+    monkeypatch.setattr(service_ops, "_run", fake_run)
+
+    result = service_ops.install()
+
+    assert result.success is True
+    assert calls[-2] == ["loginctl", "show-user", "teja", "--property=Linger"]
+    assert calls[-1] == ["loginctl", "enable-linger", "teja"]
+    assert "Linger enabled" in result.detail
+
+
+def test_install_linux_skips_enabling_when_linger_already_set(monkeypatch, tmp_path):
+    monkeypatch.setattr(pf, "detect_os", lambda: pf.OperatingSystem.LINUX)
+    monkeypatch.setattr(gen, "systemd_unit_path", lambda: tmp_path / "systemd" / "user" / gen.SYSTEMD_UNIT_NAME)
+    monkeypatch.setattr(service_ops.getpass, "getuser", lambda: "teja")
+
+    calls = []
+
+    def fake_run(args, timeout=15.0):
+        calls.append(args)
+        if args[:2] == ["loginctl", "show-user"]:
+            return _cp(0, "Linger=yes\n")  # already enabled (e.g. lenovoserver)
+        return _cp(0)
+
+    monkeypatch.setattr(service_ops, "_run", fake_run)
+
+    result = service_ops.install()
+
+    assert result.success is True
+    assert ["loginctl", "enable-linger", "teja"] not in calls  # never called -- already set
+    assert "already enabled" in result.detail.lower()
+
+
+def test_install_linux_succeeds_even_when_linger_cannot_be_enabled(monkeypatch, tmp_path):
+    """A locked-down system that refuses loginctl enable-linger must never
+    fail the whole install -- the unit itself is still correctly installed
+    and will run for as long as the session lasts.
+    """
+    monkeypatch.setattr(pf, "detect_os", lambda: pf.OperatingSystem.LINUX)
+    monkeypatch.setattr(gen, "systemd_unit_path", lambda: tmp_path / "systemd" / "user" / gen.SYSTEMD_UNIT_NAME)
+    monkeypatch.setattr(service_ops.getpass, "getuser", lambda: "teja")
+
+    def fake_run(args, timeout=15.0):
+        if args[:2] == ["loginctl", "show-user"]:
+            return _cp(0, "Linger=no\n")
+        if args[:2] == ["loginctl", "enable-linger"]:
+            return _cp(1, "", "Interactive authentication required.")
+        return _cp(0)
+
+    monkeypatch.setattr(service_ops, "_run", fake_run)
+
+    result = service_ops.install()
+
+    assert result.success is True  # the unit install itself still succeeded
+    assert "Could not enable linger" in result.detail
+    assert "ask an administrator" in result.detail
+
+
 def test_status_linux_unit_not_found(monkeypatch):
     monkeypatch.setattr(pf, "detect_os", lambda: pf.OperatingSystem.LINUX)
     with patch("portforge_agent.service_ops._run", return_value=_cp(4, "", "Unit not found.")):

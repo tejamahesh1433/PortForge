@@ -160,6 +160,20 @@ class CentralClient:
     def sync_reservation(self, reservation: Dict[str, Any]) -> CentralResult:
         return self._request("POST", "/api/reservations", body=reservation)
 
+    def generate_enrollment_token(self, label: Optional[str] = None, ttl_hours: int = 24) -> CentralResult:
+        """Admin-only -- mints a new enrollment token via the backend's own
+        `POST /agent/enrollment-tokens` (mirrors its "returned exactly once,
+        never stored in raw form" semantics). `self.token` here must be the
+        server's PORTFORGE_ADMIN_BOOTSTRAP_TOKEN, not a per-host agent
+        credential -- see security/auth.py::require_admin.
+        """
+        from urllib.parse import urlencode
+
+        params: Dict[str, Any] = {"ttl_hours": ttl_hours}
+        if label:
+            params["label"] = label
+        return self._request("POST", f"/api/agent/enrollment-tokens?{urlencode(params)}")
+
     # --- v1.1-B: remote bind-probe result submission --------------------------
     # Authenticated (require_agent) -- see docs/v1.1/remote-probe-design.md.
     # Pending probes themselves are delivered inside the existing heartbeat

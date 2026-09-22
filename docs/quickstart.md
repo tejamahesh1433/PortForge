@@ -4,15 +4,17 @@ This guide will get you up and running with PortForge, demonstrating how to allo
 
 ## 1. Start Central and Enroll
 
-Assuming Central is running (via Docker Compose), enroll your host agent to begin scanning for active ports:
+Assuming Central is running (via Docker Compose, on host port 58000 by default -- see
+`docs/installation.md`), enroll your host agent to begin scanning for active ports:
 
 ```bash
-# Generate a test token if you haven't already
-portforge central generate-token
-# Example Output: token-abc-123
+# Mint an enrollment token (needs the Central host's admin bootstrap token)
+export PORTFORGE_ADMIN_BOOTSTRAP_TOKEN="your-admin-bootstrap-token"
+portforge central generate-token --url http://localhost:58000
+# Output includes: "enrollment_token": "..." -- shown once, save it
 
 # Enroll the local machine
-portforge enroll --central "http://localhost:8000" --token "token-abc-123"
+portforge agent enroll --server http://localhost:58000 --token "THE_TOKEN_FROM_ABOVE"
 ```
 
 ## 2. Trigger a Scan
