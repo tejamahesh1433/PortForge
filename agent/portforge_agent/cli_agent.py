@@ -160,7 +160,7 @@ def _cmd_agent_status(args: argparse.Namespace) -> int:
     print(f"Host UUID: {pf.get_host_id()}")
     print(f"Hostname: {pf.get_hostname()}")
     print(f"OS: {pf.detect_os().value}")
-    print(f"Agent Version: 1.0.0")
+    print(f"Agent Version: {get_portforge_version()}")
     print(f"Protocol Version: v1")
     print(f"Central URL: {config.url if config.url else 'None'}")
     
