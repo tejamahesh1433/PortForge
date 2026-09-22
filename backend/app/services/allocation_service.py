@@ -32,6 +32,7 @@ import hashlib
 import json
 import uuid
 from datetime import datetime, timezone
+import time
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.exc import IntegrityError
@@ -523,8 +524,6 @@ def verify_allocation(db: Session, allocation_id: uuid.UUID, timeout_seconds: in
     This polls the DB for up to `timeout_seconds` to wait for the agent to report.
     Returns the AllocationOut with fresh `bind_probe` evidence.
     """
-    import time
-    
     allocation = AllocationRepository(db).get(allocation_id)
     if allocation is None:
         raise AllocationError(
@@ -537,16 +536,21 @@ def verify_allocation(db: Session, allocation_id: uuid.UUID, timeout_seconds: in
     rows, _ = reservation_repo.list(host_id=allocation.host_id, limit=1000)
     own_rows = [r for r in rows if r.allocation_id == allocation.id]
 
-    # Queue probes for all ports
+    # Queue probes for all ports (safe no-op if offline, but we check health after to avoid 10s wait)
     for r in own_rows:
         protocol_value = r.protocol.value if hasattr(r.protocol, "value") else r.protocol
         probe_service.queue_probe(db, allocation.host_id, r.port, protocol_value, r.bind_address or "0.0.0.0")
 
     db.commit()
 
+    host = HostRepository(db).get(allocation.host_id)
+    validation = _build_validation(host)
+    if validation.host_health_state != HostHealthState.HEALTHY.value:
+        return _build_allocation_out(db, allocation)
+
     # Poll for results
-    start = time.time()
-    while time.time() - start < timeout_seconds:
+    start = time.monotonic()
+    while time.monotonic() - start < timeout_seconds:
         # Check if all probes are COMPLETED or FAILED or EXPIRED
         all_done = True
         evidence_map = probe_service.get_probe_evidence_map(db, [allocation.host_id])
