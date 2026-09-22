@@ -390,3 +390,411 @@ def test_find_latest_planned_mutation(tmp_path):
 
 def test_find_latest_planned_mutation_none_when_absent(tmp_path):
     assert cm.find_latest_planned_mutation(tmp_path, "alloc-1") is None
+
+
+# ---------------------------------------------------------------------------
+# v1.1-C: Kubernetes config plan/apply/rollback
+# ---------------------------------------------------------------------------
+
+K8S_MANIFEST_YAML = """
+version: 1
+project: jarvis
+target:
+  host: NTMKEYA
+ports:
+  frontend:
+    purpose: frontend
+  api_nodeport:
+    purpose: generic
+    preferred: 30080
+config:
+  kubernetes:
+    - file: k8s/app.yaml
+      hostPorts:
+        - kind: Deployment
+          name: frontend
+          container: web
+          containerPort: 3000
+          allocation: frontend
+      nodePorts:
+        - name: api-svc
+          servicePort: 8080
+          allocation: api_nodeport
+"""
+
+K8S_YAML_TEXT = """apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+spec:
+  template:
+    spec:
+      containers:
+        - name: web
+          image: nginx
+          ports:
+            - containerPort: 3000
+              protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-svc
+spec:
+  type: NodePort
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+"""
+
+
+def _k8s_manifest():
+    return validate_manifest(parse_manifest_yaml(K8S_MANIFEST_YAML))
+
+
+def _k8s_allocation(frontend_port=31500, nodeport=30080, status="active", project="jarvis", host_id="host-uuid"):
+    return {
+        "allocation_id": "alloc-k8s-1",
+        "project": project,
+        "status": status,
+        "host": {"id": host_id, "hostname": "NTMKEYA"},
+        "allocations": [
+            {"name": "frontend", "purpose": "frontend", "protocol": "tcp", "port": frontend_port, "reservation_id": "r1"},
+            {"name": "api_nodeport", "purpose": "generic", "protocol": "tcp", "port": nodeport, "reservation_id": "r2"},
+        ],
+    }
+
+
+def _write_k8s_project(tmp_path):
+    (tmp_path / "k8s").mkdir()
+    (tmp_path / "k8s" / "app.yaml").write_text(K8S_YAML_TEXT)
+
+
+def test_kubernetes_ownership_missing_referenced_name():
+    allocation = _k8s_allocation()
+    allocation["allocations"] = [allocation["allocations"][0]]  # drop api_nodeport
+    with pytest.raises(cm.ConfigError) as exc_info:
+        cm.verify_allocation_ownership(allocation, _k8s_manifest(), "host-uuid")
+    assert exc_info.value.code == "CONFIG_MAPPING_INVALID"
+
+
+def test_kubernetes_ownership_host_mismatch():
+    with pytest.raises(cm.ConfigError) as exc_info:
+        cm.verify_allocation_ownership(_k8s_allocation(host_id="different"), _k8s_manifest(), "host-uuid")
+    assert exc_info.value.code == "ALLOCATION_HOST_MISMATCH"
+
+
+def test_kubernetes_ownership_project_mismatch():
+    with pytest.raises(cm.ConfigError) as exc_info:
+        cm.verify_allocation_ownership(_k8s_allocation(project="other"), _k8s_manifest(), "host-uuid")
+    assert exc_info.value.code == "ALLOCATION_PROJECT_MISMATCH"
+
+
+def test_kubernetes_plan_is_non_mutating(tmp_path):
+    _write_k8s_project(tmp_path)
+    before = (tmp_path / "k8s" / "app.yaml").read_bytes()
+    before_mtime = (tmp_path / "k8s" / "app.yaml").stat().st_mtime
+
+    plan = cm.build_plan(_k8s_manifest(), _k8s_allocation(), tmp_path)
+    cm.persist_plan(plan, tmp_path)
+
+    assert (tmp_path / "k8s" / "app.yaml").read_bytes() == before
+    assert (tmp_path / "k8s" / "app.yaml").stat().st_mtime == before_mtime
+
+
+def test_kubernetes_plan_shows_correct_before_after(tmp_path):
+    _write_k8s_project(tmp_path)
+    plan = cm.build_plan(_k8s_manifest(), _k8s_allocation(frontend_port=31500, nodeport=30080), tmp_path)
+    payload = cm.plan_to_json(plan)
+    k8s_changes = next(f for f in payload["changes"] if f["file"] == "k8s/app.yaml")["changes"]
+    host_change = next(c for c in k8s_changes if c["field"] == "hostPort")
+    node_change = next(c for c in k8s_changes if c["field"] == "nodePort")
+    assert host_change == {
+        "kind": "Deployment", "name": "frontend", "field": "hostPort", "container": "web",
+        "match_port": 3000, "allocation": "frontend", "before": None, "after": 31500, "action": "update",
+    }
+    assert node_change["after"] == 30080
+    assert node_change["allocation"] == "api_nodeport"
+
+
+def test_kubernetes_file_not_found(tmp_path):
+    with pytest.raises(cm.ConfigError) as exc_info:
+        cm.build_plan(_k8s_manifest(), _k8s_allocation(), tmp_path)
+    assert exc_info.value.code == "CONFIG_FILE_NOT_FOUND"
+
+
+def test_kubernetes_missing_target_container_fails_plan_zero_mutation(tmp_path):
+    _write_k8s_project(tmp_path)
+    bad_manifest_yaml = K8S_MANIFEST_YAML.replace("container: web", "container: ghost")
+    manifest = validate_manifest(parse_manifest_yaml(bad_manifest_yaml))
+    before = (tmp_path / "k8s" / "app.yaml").read_bytes()
+    with pytest.raises(cm.ConfigError) as exc_info:
+        cm.build_plan(manifest, _k8s_allocation(), tmp_path)
+    assert exc_info.value.code == "KUBERNETES_CONTAINER_NOT_FOUND"
+    assert (tmp_path / "k8s" / "app.yaml").read_bytes() == before
+
+
+def test_kubernetes_ambiguous_resource_fails_plan(tmp_path):
+    _write_k8s_project(tmp_path)
+    (tmp_path / "k8s" / "app.yaml").write_text(K8S_YAML_TEXT + "---\n" + K8S_YAML_TEXT.split("---")[0])
+    with pytest.raises(cm.ConfigError) as exc_info:
+        cm.build_plan(_k8s_manifest(), _k8s_allocation(), tmp_path)
+    assert exc_info.value.code == "KUBERNETES_RESOURCE_AMBIGUOUS"
+
+
+def test_kubernetes_nodeport_out_of_range_fails_plan_zero_mutation(tmp_path):
+    _write_k8s_project(tmp_path)
+    before = (tmp_path / "k8s" / "app.yaml").read_bytes()
+    with pytest.raises(cm.ConfigError) as exc_info:
+        cm.build_plan(_k8s_manifest(), _k8s_allocation(nodeport=8080), tmp_path)
+    assert exc_info.value.code == "KUBERNETES_NODEPORT_OUT_OF_RANGE"
+    assert (tmp_path / "k8s" / "app.yaml").read_bytes() == before
+
+
+def test_kubernetes_service_wrong_type_fails_plan(tmp_path):
+    (tmp_path / "k8s").mkdir()
+    (tmp_path / "k8s" / "app.yaml").write_text(K8S_YAML_TEXT.replace("type: NodePort", "type: ClusterIP"))
+    with pytest.raises(cm.ConfigError) as exc_info:
+        cm.build_plan(_k8s_manifest(), _k8s_allocation(), tmp_path)
+    assert exc_info.value.code == "KUBERNETES_SERVICE_TYPE_UNSUPPORTED"
+
+
+def test_kubernetes_path_outside_project_rejected(tmp_path):
+    manifest_yaml = """
+version: 1
+project: jarvis
+target:
+  host: NTMKEYA
+ports:
+  frontend:
+    purpose: frontend
+config:
+  kubernetes:
+    - file: ../outside.yaml
+      hostPorts:
+        - kind: Deployment
+          name: frontend
+          container: web
+          containerPort: 3000
+          allocation: frontend
+"""
+    manifest = validate_manifest(parse_manifest_yaml(manifest_yaml))
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    outside = tmp_path / "outside.yaml"
+    outside.write_text("kind: Secret\n")
+
+    with pytest.raises(cm.ConfigError) as exc_info:
+        cm.build_plan(manifest, _k8s_allocation(), project_dir)
+    assert exc_info.value.code == "CONFIG_PATH_OUTSIDE_PROJECT"
+    assert outside.read_text() == "kind: Secret\n"
+
+
+@pytest.mark.skipif(
+    platform.system() == "Windows", reason="creating symlinks requires elevated privilege on this Windows machine"
+)
+def test_kubernetes_symlink_escape_rejected(tmp_path):
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    (outside_dir / "secret.yaml").write_text("kind: Secret\n")
+    os.symlink(str(outside_dir / "secret.yaml"), str(project_dir / "app.yaml"))
+
+    with pytest.raises(ConfigPathError):
+        resolve_within_root(project_dir, "app.yaml")
+    assert (outside_dir / "secret.yaml").read_text() == "kind: Secret\n"
+
+
+def test_kubernetes_full_apply_rollback_cycle_exact_bytes(tmp_path):
+    _write_k8s_project(tmp_path)
+    before = (tmp_path / "k8s" / "app.yaml").read_bytes()
+
+    plan = cm.build_plan(_k8s_manifest(), _k8s_allocation(), tmp_path)
+    cm.persist_plan(plan, tmp_path)
+    record = cm.apply_mutation(tmp_path, plan.mutation_id)
+    assert record["status"] == "APPLIED"
+
+    applied_text = (tmp_path / "k8s" / "app.yaml").read_text()
+    assert "hostPort: 31500" in applied_text
+    assert "nodePort: 30080" in applied_text
+    assert "containerPort: 3000" in applied_text  # unchanged match key
+    assert "targetPort: 8080" in applied_text  # never owned by PortForge
+
+    status = cm.get_status(tmp_path, plan.mutation_id)
+    assert status["status"] == "APPLIED"
+    assert status["files"][0]["type"] == "kubernetes"
+
+    rolled = cm.rollback_mutation(tmp_path, plan.mutation_id)
+    assert rolled["status"] == "ROLLED_BACK"
+    assert _sha256((tmp_path / "k8s" / "app.yaml").read_bytes()) == _sha256(before)
+    assert (tmp_path / "k8s" / "app.yaml").read_bytes() == before
+
+
+def test_kubernetes_apply_is_idempotent_no_duplicate_rewrite(tmp_path):
+    _write_k8s_project(tmp_path)
+    plan = cm.build_plan(_k8s_manifest(), _k8s_allocation(), tmp_path)
+    cm.persist_plan(plan, tmp_path)
+
+    first = cm.apply_mutation(tmp_path, plan.mutation_id)
+    mtime_after_first = (tmp_path / "k8s" / "app.yaml").stat().st_mtime
+    second = cm.apply_mutation(tmp_path, plan.mutation_id)
+
+    assert first["status"] == second["status"] == "APPLIED"
+    assert first["files"][0]["after_hash"] == second["files"][0]["after_hash"]
+    assert (tmp_path / "k8s" / "app.yaml").stat().st_mtime == mtime_after_first
+
+
+def test_kubernetes_external_edit_before_apply_blocks_apply(tmp_path):
+    _write_k8s_project(tmp_path)
+    plan = cm.build_plan(_k8s_manifest(), _k8s_allocation(), tmp_path)
+    cm.persist_plan(plan, tmp_path)
+
+    (tmp_path / "k8s" / "app.yaml").write_text("kind: EditedExternally\n")
+
+    with pytest.raises(cm.ConfigError) as exc_info:
+        cm.apply_mutation(tmp_path, plan.mutation_id)
+    assert exc_info.value.code == "CONFIG_CHANGED_SINCE_PLAN"
+    assert (tmp_path / "k8s" / "app.yaml").read_text() == "kind: EditedExternally\n"
+
+
+def test_kubernetes_external_edit_before_rollback_blocks_rollback(tmp_path):
+    _write_k8s_project(tmp_path)
+    plan = cm.build_plan(_k8s_manifest(), _k8s_allocation(), tmp_path)
+    cm.persist_plan(plan, tmp_path)
+    cm.apply_mutation(tmp_path, plan.mutation_id)
+
+    (tmp_path / "k8s" / "app.yaml").write_text("kind: EditedAfterApply\n")
+
+    with pytest.raises(cm.ConfigError) as exc_info:
+        cm.rollback_mutation(tmp_path, plan.mutation_id)
+    assert exc_info.value.code == "CONFIG_CHANGED_SINCE_APPLY"
+    assert (tmp_path / "k8s" / "app.yaml").read_text() == "kind: EditedAfterApply\n"
+
+
+def test_kubernetes_allocation_remains_active_after_config_rollback(tmp_path):
+    """Phase 8C semantics preserved for the new file kind too: config
+    rollback restores the file, it never releases/touches the allocation
+    (this test only proves nothing in the config-mutation layer implies
+    release -- release is a separate, allocation_service-owned action)."""
+    _write_k8s_project(tmp_path)
+    allocation = _k8s_allocation()
+    plan = cm.build_plan(_k8s_manifest(), allocation, tmp_path)
+    cm.persist_plan(plan, tmp_path)
+    cm.apply_mutation(tmp_path, plan.mutation_id)
+    rolled = cm.rollback_mutation(tmp_path, plan.mutation_id)
+    assert rolled["status"] == "ROLLED_BACK"
+    assert rolled["allocation_id"] == "alloc-k8s-1"  # unchanged -- config layer never mutates allocation state
+
+
+def test_combined_dotenv_and_kubernetes_config_multi_file_apply(tmp_path):
+    (tmp_path / ".env").write_text("EXISTING=1\n")
+    _write_k8s_project(tmp_path)
+    combined_yaml = """
+version: 1
+project: jarvis
+target:
+  host: NTMKEYA
+ports:
+  frontend:
+    purpose: frontend
+  api_nodeport:
+    purpose: generic
+    preferred: 30080
+config:
+  dotenv:
+    - file: .env
+      values:
+        FRONTEND_PORT: frontend
+  kubernetes:
+    - file: k8s/app.yaml
+      hostPorts:
+        - kind: Deployment
+          name: frontend
+          container: web
+          containerPort: 3000
+          allocation: frontend
+      nodePorts:
+        - name: api-svc
+          servicePort: 8080
+          allocation: api_nodeport
+"""
+    manifest = validate_manifest(parse_manifest_yaml(combined_yaml))
+    plan = cm.build_plan(manifest, _k8s_allocation(), tmp_path)
+    cm.persist_plan(plan, tmp_path)
+    record = cm.apply_mutation(tmp_path, plan.mutation_id)
+    assert record["status"] == "APPLIED"
+    assert (tmp_path / ".env").read_text() == "EXISTING=1\nFRONTEND_PORT=31500\n"
+    assert "hostPort: 31500" in (tmp_path / "k8s" / "app.yaml").read_text()
+
+    rolled = cm.rollback_mutation(tmp_path, plan.mutation_id)
+    assert rolled["status"] == "ROLLED_BACK"
+    assert (tmp_path / ".env").read_text() == "EXISTING=1\n"
+    assert "hostPort:" not in (tmp_path / "k8s" / "app.yaml").read_text()
+
+
+def test_combined_config_failure_in_kubernetes_restores_earlier_dotenv_write(tmp_path, monkeypatch):
+    """Task §29/§15: a controlled failure in a LATER file (kubernetes) must
+    restore an EARLIER file (dotenv) already written this same apply call
+    -- no partial config state remains."""
+    (tmp_path / ".env").write_text("EXISTING=1\n")
+    _write_k8s_project(tmp_path)
+    combined_yaml = """
+version: 1
+project: jarvis
+target:
+  host: NTMKEYA
+ports:
+  frontend:
+    purpose: frontend
+config:
+  dotenv:
+    - file: .env
+      values:
+        FRONTEND_PORT: frontend
+  kubernetes:
+    - file: k8s/app.yaml
+      hostPorts:
+        - kind: Deployment
+          name: frontend
+          container: web
+          containerPort: 3000
+          allocation: frontend
+"""
+    manifest = validate_manifest(parse_manifest_yaml(combined_yaml))
+    allocation = {
+        "allocation_id": "alloc-combined-1", "project": "jarvis", "status": "active",
+        "host": {"id": "host-uuid", "hostname": "NTMKEYA"},
+        "allocations": [{"name": "frontend", "purpose": "frontend", "protocol": "tcp", "port": 31500, "reservation_id": "r1"}],
+    }
+    plan = cm.build_plan(manifest, allocation, tmp_path)
+    cm.persist_plan(plan, tmp_path)
+    before_env = (tmp_path / ".env").read_bytes()
+
+    real_atomic_write = cm.atomic_write
+
+    def _flaky_atomic_write(path, content):
+        if path.parent == tmp_path / "k8s" and path.name == "app.yaml":
+            raise OSError("simulated disk failure writing kubernetes file")
+        return real_atomic_write(path, content)
+
+    monkeypatch.setattr(cm, "atomic_write", _flaky_atomic_write)
+
+    with pytest.raises(cm.ConfigError) as exc_info:
+        cm.apply_mutation(tmp_path, plan.mutation_id)
+    assert exc_info.value.code == "CONFIG_APPLY_FAILED"
+    assert (tmp_path / ".env").read_bytes() == before_env  # earlier write restored, no partial state
+
+
+def test_kubernetes_status_never_leaks_secrets(tmp_path):
+    (tmp_path / "k8s").mkdir()
+    secret_bearing_yaml = K8S_YAML_TEXT.replace(
+        "image: nginx", "image: nginx\n          env:\n            - name: DB_PASSWORD\n              value: super-secret-value"
+    )
+    (tmp_path / "k8s" / "app.yaml").write_text(secret_bearing_yaml)
+    plan = cm.build_plan(_k8s_manifest(), _k8s_allocation(), tmp_path)
+    cm.persist_plan(plan, tmp_path)
+    cm.apply_mutation(tmp_path, plan.mutation_id)
+    status = cm.get_status(tmp_path, plan.mutation_id)
+    assert "super-secret-value" not in str(status)

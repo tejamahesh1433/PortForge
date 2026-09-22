@@ -119,3 +119,123 @@ def test_workflow_persists_allocated_state_before_config_planning(tmp_path, monk
     assert status["status"] == "ALLOCATED"
     assert status["allocation"]["id"] == ALLOC["allocation_id"]
     assert status["config"]["applied"] is False
+
+
+# ---------------------------------------------------------------------------
+# v1.1-C: Kubernetes config integrated into the existing workflow commands
+# (no new `portforge kubernetes ...` command -- see task §19).
+# ---------------------------------------------------------------------------
+
+K8S_MANIFEST = MANIFEST + (
+    "config:\n"
+    "  kubernetes:\n"
+    "    - file: k8s/app.yaml\n"
+    "      hostPorts:\n"
+    "        - kind: Deployment\n"
+    "          name: api\n"
+    "          container: api\n"
+    "          containerPort: 8000\n"
+    "          allocation: api\n"
+)
+
+K8S_APP_YAML = (
+    "apiVersion: apps/v1\n"
+    "kind: Deployment\n"
+    "metadata:\n"
+    "  name: api\n"
+    "spec:\n"
+    "  template:\n"
+    "    spec:\n"
+    "      containers:\n"
+    "        - name: api\n"
+    "          image: myapi:latest\n"
+    "          ports:\n"
+    "            - containerPort: 8000\n"
+    "              protocol: TCP\n"
+)
+
+
+def test_workflow_prepare_lists_kubernetes_config_file(tmp_path, capsys):
+    manifest = tmp_path / "portforge.yml"
+    manifest.write_text(K8S_MANIFEST)
+    with patch("portforge_agent.central_client.CentralClient") as cls:
+        cls.return_value = client()
+        assert main(["workflow", "prepare", str(manifest), "--url", "http://central", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert {"file": "k8s/app.yaml", "type": "kubernetes"} in payload["config_files"]
+
+
+def test_workflow_apply_with_kubernetes_config_end_to_end(tmp_path):
+    from portforge_agent.manifest import load_and_validate_manifest
+    from portforge_agent.project_adapter import NormalizedHostRef
+    from portforge_agent.workflow import apply_workflow
+
+    manifest_path = tmp_path / "portforge.yml"
+    manifest_path.write_text(K8S_MANIFEST)
+    (tmp_path / "k8s").mkdir()
+    (tmp_path / "k8s" / "app.yaml").write_text(K8S_APP_YAML)
+
+    instance = client()
+    instance.create_allocation.return_value = MagicMock(success=True, status_code=201, data=ALLOC)
+
+    result = apply_workflow(
+        instance,
+        load_and_validate_manifest(manifest_path),
+        NormalizedHostRef(id=HOST["items"][0]["id"], hostname="NTMKEYA"),
+        tmp_path,
+        "k8s-e2e",
+    )
+
+    assert result["status"] == "APPLIED"
+    assert result["config"]["applied"] is True
+    applied_text = (tmp_path / "k8s" / "app.yaml").read_text()
+    assert "hostPort: 8000" in applied_text
+    assert "containerPort: 8000" in applied_text  # match key never touched
+
+
+def test_workflow_json_output_pure_json_with_kubernetes_config(tmp_path, capsys):
+    manifest = tmp_path / "portforge.yml"
+    manifest.write_text(K8S_MANIFEST)
+    (tmp_path / "k8s").mkdir()
+    (tmp_path / "k8s" / "app.yaml").write_text(K8S_APP_YAML)
+    with patch("portforge_agent.central_client.CentralClient") as cls:
+        instance = client()
+        instance.create_allocation.return_value = MagicMock(success=True, status_code=201, data=ALLOC)
+        cls.return_value = instance
+        assert main(["workflow", "apply", str(manifest), "--url", "http://central", "--request-id", "pure-json", "--json"]) == 0
+    out = capsys.readouterr().out
+    # No progress banners around JSON -- the whole stdout must parse as one object.
+    payload = json.loads(out)
+    assert payload["config"]["applied"] is True
+
+
+def test_workflow_kubernetes_missing_target_fails_and_compensates(tmp_path):
+    from portforge_agent.manifest import load_and_validate_manifest
+    from portforge_agent.project_adapter import NormalizedHostRef
+    from portforge_agent.workflow import WorkflowError, apply_workflow
+
+    manifest_path = tmp_path / "portforge.yml"
+    manifest_path.write_text(K8S_MANIFEST.replace("container: api", "container: ghost"))
+    (tmp_path / "k8s").mkdir()
+    (tmp_path / "k8s" / "app.yaml").write_text(K8S_APP_YAML)
+
+    instance = client()
+    instance.create_allocation.return_value = MagicMock(success=True, status_code=201, data=ALLOC)
+    instance.release_allocation.return_value = MagicMock(success=True)
+
+    try:
+        apply_workflow(
+            instance,
+            load_and_validate_manifest(manifest_path),
+            NormalizedHostRef(id=HOST["items"][0]["id"], hostname="NTMKEYA"),
+            tmp_path,
+            "k8s-fail",
+        )
+    except WorkflowError as exc:
+        assert exc.code == "KUBERNETES_CONTAINER_NOT_FOUND"
+    else:
+        raise AssertionError("expected config failure")
+    # Newly-created allocation must be released since config planning failed.
+    instance.release_allocation.assert_called_once_with(ALLOC["allocation_id"])
+    # And the Kubernetes file itself must be untouched (plan never wrote it).
+    assert "hostPort" not in (tmp_path / "k8s" / "app.yaml").read_text()

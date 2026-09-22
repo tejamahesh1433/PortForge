@@ -27,6 +27,14 @@ from typing import Any, Dict, List, Optional
 from .compose_editor import ComposeError, apply_port_mapping, dump_compose, load_compose
 from .config_files import ConfigPathError, atomic_write, read_file_bytes, resolve_within_root, sha256_bytes, sha256_of_path
 from .dotenv_editor import DotenvError, compute_dotenv_update
+from .k8s_editor import (
+    DEFAULT_NODEPORT_RANGE,
+    KubernetesError,
+    apply_host_port,
+    apply_node_port,
+    dump_kubernetes_documents,
+    load_kubernetes_documents,
+)
 from .manifest import ProjectManifest
 
 MUTATIONS_DIR_NAME = ".portforge"
@@ -91,6 +99,9 @@ def verify_allocation_ownership(allocation_data: Dict[str, Any], manifest: Proje
         for mapping in manifest.config.compose:
             for entries in mapping.services.values():
                 referenced.update(e.allocation for e in entries)
+        for mapping in manifest.config.kubernetes:
+            referenced.update(hp.allocation for hp in mapping.host_ports)
+            referenced.update(np.allocation for np in mapping.node_ports)
         missing = sorted(referenced - ports_by_name)
         if missing:
             raise ConfigError(
@@ -206,8 +217,87 @@ def _plan_compose_file(project_root: Path, mapping, ports_by_name: Dict[str, int
     )
 
 
+def _plan_kubernetes_file(project_root: Path, mapping, ports_by_name: Dict[str, int]) -> PlannedFile:
+    try:
+        target = resolve_within_root(project_root, mapping.file)
+    except ConfigPathError as exc:
+        raise ConfigError("CONFIG_PATH_OUTSIDE_PROJECT", str(exc), status_code=400)
+
+    original_bytes = read_file_bytes(target)
+    if original_bytes is None:
+        # Same posture as Compose (§9 above): PortForge never invents a
+        # base Kubernetes manifest from scratch.
+        raise ConfigError(
+            "CONFIG_FILE_NOT_FOUND", f"Kubernetes file '{mapping.file}' does not exist.", status_code=404
+        )
+
+    try:
+        docs = load_kubernetes_documents(original_bytes.decode("utf-8"))
+    except KubernetesError as exc:
+        raise ConfigError(exc.code, exc.message, status_code=409, details=exc.details)
+
+    changes: List[dict] = []
+    for hp in mapping.host_ports:
+        host_port = ports_by_name[hp.allocation]
+        try:
+            docs, change = apply_host_port(
+                docs, hp.kind, hp.name, hp.namespace, hp.container, hp.container_port, hp.protocol, host_port
+            )
+        except KubernetesError as exc:
+            raise ConfigError(exc.code, exc.message, status_code=409, details=exc.details)
+        changes.append(
+            {
+                "kind": change.kind, "name": change.name, "field": change.field, "container": change.container,
+                "match_port": change.match_port, "allocation": hp.allocation,
+                "before": change.before, "after": change.after, "action": change.action,
+            }
+        )
+
+    for np in mapping.node_ports:
+        node_port = ports_by_name[np.allocation]
+        # v1.1-C §5: PortForge has no authoritative way to discover a live
+        # cluster's actual configured NodePort range (config plan/apply
+        # never touches a live cluster -- see task §21). Validate against
+        # the documented supported-local-cluster assumption instead of
+        # silently writing a value that kind/Docker Desktop Kubernetes
+        # would then reject.
+        low, high = DEFAULT_NODEPORT_RANGE
+        if not (low <= node_port <= high):
+            raise ConfigError(
+                "KUBERNETES_NODEPORT_OUT_OF_RANGE",
+                f"Allocation '{np.allocation}' resolved to port {node_port}, which is outside the supported "
+                f"local-cluster NodePort range {low}-{high} (kind / Docker Desktop Kubernetes default). Give "
+                f"'ports.{np.allocation}' a 'preferred' value in that range.",
+                status_code=409,
+                details=[{"allocation": np.allocation, "port": node_port, "range": [low, high]}],
+            )
+        try:
+            docs, change = apply_node_port(docs, np.name, np.namespace, np.service_port, np.protocol, node_port)
+        except KubernetesError as exc:
+            raise ConfigError(exc.code, exc.message, status_code=409, details=exc.details)
+        changes.append(
+            {
+                "kind": change.kind, "name": change.name, "field": change.field, "container": change.container,
+                "match_port": change.match_port, "allocation": np.allocation,
+                "before": change.before, "after": change.after, "action": change.action,
+            }
+        )
+
+    new_text = dump_kubernetes_documents(docs)
+    original_text = original_bytes.decode("utf-8")
+    action = "will_update" if new_text != original_text else "no_change"
+    return PlannedFile(
+        relative_path=mapping.file,
+        kind="kubernetes",
+        action=action,
+        before_hash=sha256_bytes(original_bytes),
+        new_content=new_text,
+        changes=changes,
+    )
+
+
 def build_plan(manifest: ProjectManifest, allocation_data: Dict[str, Any], project_root: Path) -> ConfigPlan:
-    if manifest.config is None or (not manifest.config.dotenv and not manifest.config.compose):
+    if manifest.config is None or not (manifest.config.dotenv or manifest.config.compose or manifest.config.kubernetes):
         raise ConfigError(
             "CONFIG_NOT_DECLARED", "This manifest declares no 'config' mappings -- nothing to plan.", status_code=400
         )
@@ -218,6 +308,8 @@ def build_plan(manifest: ProjectManifest, allocation_data: Dict[str, Any], proje
         files.append(_plan_dotenv_file(project_root, mapping, ports_by_name))
     for mapping in manifest.config.compose:
         files.append(_plan_compose_file(project_root, mapping, ports_by_name))
+    for mapping in manifest.config.kubernetes:
+        files.append(_plan_kubernetes_file(project_root, mapping, ports_by_name))
 
     return ConfigPlan(
         mutation_id=str(uuid.uuid4()),

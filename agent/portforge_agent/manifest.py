@@ -51,15 +51,28 @@ _TOP_LEVEL_KEYS = {"version", "project", "target", "ports", "request_id", "confi
 _TARGET_KEYS = {"host"}
 _PORT_ENTRY_KEYS = {"purpose", "protocol", "preferred"}
 
-_CONFIG_KEYS = {"dotenv", "compose"}
+_CONFIG_KEYS = {"dotenv", "compose", "kubernetes"}
 _DOTENV_ENTRY_KEYS = {"file", "values"}
 _COMPOSE_ENTRY_KEYS = {"file", "services"}
 _COMPOSE_PORT_ENTRY_KEYS = {"allocation", "container", "protocol"}
+
+# v1.1-C: see docs/v1.1/kubernetes-design.md for the hostPort/nodePort-only
+# scope this schema exists to express. `kind` is restricted to
+# k8s_editor.SUPPORTED_WORKLOAD_KINDS at validation time (mirrors
+# k8s_editor.py's own list -- kept as a manual tripwire the same way
+# manifest.py's MAX_PORTS_PER_MANIFEST already mirrors the backend's
+# MAX_BUNDLE_SIZE).
+_KUBERNETES_ENTRY_KEYS = {"file", "hostPorts", "nodePorts"}
+_KUBERNETES_HOSTPORT_ENTRY_KEYS = {"kind", "name", "namespace", "container", "containerPort", "protocol", "allocation"}
+_KUBERNETES_NODEPORT_ENTRY_KEYS = {"name", "namespace", "servicePort", "protocol", "allocation"}
+_KUBERNETES_SUPPORTED_KINDS = ("Deployment", "StatefulSet")
 
 MAX_CONFIG_FILES_PER_KIND = 10
 MAX_VALUES_PER_DOTENV_FILE = 50
 MAX_SERVICES_PER_COMPOSE_FILE = 50
 MAX_PORTS_PER_COMPOSE_SERVICE = 20
+MAX_HOSTPORTS_PER_KUBERNETES_FILE = 50
+MAX_NODEPORTS_PER_KUBERNETES_FILE = 50
 
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -106,9 +119,37 @@ class ComposeFileMapping:
 
 
 @dataclass(frozen=True)
+class KubernetesHostPortEntry:
+    kind: str  # "Deployment" | "StatefulSet" -- see _KUBERNETES_SUPPORTED_KINDS
+    name: str  # metadata.name
+    namespace: Optional[str]  # metadata.namespace, only used to disambiguate; None = unfiltered
+    container: str  # container name within the Pod template -- always explicit, never inferred
+    container_port: int  # containerPort match key -- PortForge never changes this value itself
+    protocol: str  # default "tcp"
+    allocation: str  # allocation request name (a `ports.<name>` key)
+
+
+@dataclass(frozen=True)
+class KubernetesNodePortEntry:
+    name: str  # Service metadata.name
+    namespace: Optional[str]
+    service_port: int  # Service spec.ports[].port match key (NOT targetPort)
+    protocol: str  # default "tcp"
+    allocation: str  # allocation request name (a `ports.<name>` key)
+
+
+@dataclass(frozen=True)
+class KubernetesFileMapping:
+    file: str
+    host_ports: List[KubernetesHostPortEntry]
+    node_ports: List[KubernetesNodePortEntry]
+
+
+@dataclass(frozen=True)
 class ConfigMappings:
     dotenv: List[DotenvFileMapping]
     compose: List[ComposeFileMapping]
+    kubernetes: List[KubernetesFileMapping]
 
 
 @dataclass(frozen=True)
@@ -349,6 +390,176 @@ def _validate_compose_mapping(entry: Any, index: int, known_names: set) -> Compo
     return ComposeFileMapping(file=file, services=resolved)
 
 
+def _validate_kubernetes_hostport_entry(entry: Any, context: str, known_names: set) -> KubernetesHostPortEntry:
+    if not isinstance(entry, dict):
+        raise ManifestError("MANIFEST_INVALID", f"'{context}' must be a mapping.")
+    _reject_unknown_keys(entry, _KUBERNETES_HOSTPORT_ENTRY_KEYS, context)
+
+    kind = entry.get("kind")
+    if not isinstance(kind, str) or kind not in _KUBERNETES_SUPPORTED_KINDS:
+        raise ManifestError(
+            "MANIFEST_INVALID",
+            f"'{context}.kind' must be one of {_KUBERNETES_SUPPORTED_KINDS}, got {kind!r}.",
+            details=[{"field": f"{context}.kind"}],
+        )
+
+    name = _require_string(entry, "name", context, max_length=255)
+
+    namespace: Optional[str] = None
+    if "namespace" in entry:
+        raw_ns = entry["namespace"]
+        if not isinstance(raw_ns, str) or not raw_ns.strip():
+            raise ManifestError("MANIFEST_INVALID", f"'{context}.namespace' must be a non-empty string if present.")
+        namespace = raw_ns.strip()
+
+    container = _require_string(entry, "container", context, max_length=255)
+
+    container_port = entry.get("containerPort")
+    if isinstance(container_port, bool) or not isinstance(container_port, int) or not (1 <= container_port <= 65535):
+        raise ManifestError(
+            "MANIFEST_INVALID",
+            f"'{context}.containerPort' must be an integer between 1 and 65535, got {container_port!r}.",
+        )
+
+    protocol = entry.get("protocol", "tcp")
+    if not isinstance(protocol, str) or protocol not in _PROTOCOLS:
+        raise ManifestError(
+            "MANIFEST_INVALID", f"'{context}.protocol' must be one of {_PROTOCOLS}, got {protocol!r}."
+        )
+
+    allocation = entry.get("allocation")
+    if not isinstance(allocation, str) or not allocation.strip():
+        raise ManifestError("MANIFEST_INVALID", f"'{context}.allocation' must be a non-empty string.")
+    allocation = allocation.strip()
+    if allocation not in known_names:
+        raise ManifestError(
+            "CONFIG_MAPPING_INVALID",
+            f"'{context}.allocation' references '{allocation}', which is not one of this manifest's "
+            f"'ports' entries: {', '.join(sorted(known_names))}.",
+            details=[{"field": f"{context}.allocation", "reference": allocation}],
+        )
+
+    return KubernetesHostPortEntry(
+        kind=kind, name=name, namespace=namespace, container=container, container_port=container_port,
+        protocol=protocol, allocation=allocation,
+    )
+
+
+def _validate_kubernetes_nodeport_entry(entry: Any, context: str, known_names: set) -> KubernetesNodePortEntry:
+    if not isinstance(entry, dict):
+        raise ManifestError("MANIFEST_INVALID", f"'{context}' must be a mapping.")
+    _reject_unknown_keys(entry, _KUBERNETES_NODEPORT_ENTRY_KEYS, context)
+
+    name = _require_string(entry, "name", context, max_length=255)
+
+    namespace: Optional[str] = None
+    if "namespace" in entry:
+        raw_ns = entry["namespace"]
+        if not isinstance(raw_ns, str) or not raw_ns.strip():
+            raise ManifestError("MANIFEST_INVALID", f"'{context}.namespace' must be a non-empty string if present.")
+        namespace = raw_ns.strip()
+
+    service_port = entry.get("servicePort")
+    if isinstance(service_port, bool) or not isinstance(service_port, int) or not (1 <= service_port <= 65535):
+        raise ManifestError(
+            "MANIFEST_INVALID",
+            f"'{context}.servicePort' must be an integer between 1 and 65535, got {service_port!r}.",
+        )
+
+    protocol = entry.get("protocol", "tcp")
+    if not isinstance(protocol, str) or protocol not in _PROTOCOLS:
+        raise ManifestError(
+            "MANIFEST_INVALID", f"'{context}.protocol' must be one of {_PROTOCOLS}, got {protocol!r}."
+        )
+
+    allocation = entry.get("allocation")
+    if not isinstance(allocation, str) or not allocation.strip():
+        raise ManifestError("MANIFEST_INVALID", f"'{context}.allocation' must be a non-empty string.")
+    allocation = allocation.strip()
+    if allocation not in known_names:
+        raise ManifestError(
+            "CONFIG_MAPPING_INVALID",
+            f"'{context}.allocation' references '{allocation}', which is not one of this manifest's "
+            f"'ports' entries: {', '.join(sorted(known_names))}.",
+            details=[{"field": f"{context}.allocation", "reference": allocation}],
+        )
+
+    return KubernetesNodePortEntry(name=name, namespace=namespace, service_port=service_port, protocol=protocol, allocation=allocation)
+
+
+def _validate_kubernetes_mapping(entry: Any, index: int, known_names: set) -> KubernetesFileMapping:
+    context = f"config.kubernetes[{index}]"
+    if not isinstance(entry, dict):
+        raise ManifestError("MANIFEST_INVALID", f"'{context}' must be a mapping.")
+    _reject_unknown_keys(entry, _KUBERNETES_ENTRY_KEYS, context)
+    file = _require_string(entry, "file", context, max_length=1024)
+
+    host_ports_raw = entry.get("hostPorts", [])
+    if not isinstance(host_ports_raw, list):
+        raise ManifestError("MANIFEST_INVALID", f"'{context}.hostPorts' must be a list.")
+    if len(host_ports_raw) > MAX_HOSTPORTS_PER_KUBERNETES_FILE:
+        raise ManifestError(
+            "MANIFEST_INVALID",
+            f"'{context}.hostPorts' has {len(host_ports_raw)} entries, exceeding the "
+            f"{MAX_HOSTPORTS_PER_KUBERNETES_FILE}-entry limit.",
+        )
+    host_ports = [
+        _validate_kubernetes_hostport_entry(item, f"{context}.hostPorts[{i}]", known_names)
+        for i, item in enumerate(host_ports_raw)
+    ]
+
+    node_ports_raw = entry.get("nodePorts", [])
+    if not isinstance(node_ports_raw, list):
+        raise ManifestError("MANIFEST_INVALID", f"'{context}.nodePorts' must be a list.")
+    if len(node_ports_raw) > MAX_NODEPORTS_PER_KUBERNETES_FILE:
+        raise ManifestError(
+            "MANIFEST_INVALID",
+            f"'{context}.nodePorts' has {len(node_ports_raw)} entries, exceeding the "
+            f"{MAX_NODEPORTS_PER_KUBERNETES_FILE}-entry limit.",
+        )
+    node_ports = [
+        _validate_kubernetes_nodeport_entry(item, f"{context}.nodePorts[{i}]", known_names)
+        for i, item in enumerate(node_ports_raw)
+    ]
+
+    if not host_ports and not node_ports:
+        raise ManifestError(
+            "MANIFEST_INVALID", f"'{context}' declares neither 'hostPorts' nor 'nodePorts' -- nothing to map."
+        )
+
+    # Duplicate/conflicting mappings rejected (task §3): two entries that
+    # would target the exact same (kind, namespace, name, container,
+    # containerPort) or (namespace, name, servicePort) location are
+    # ambiguous by construction -- reject at validation time rather than
+    # letting k8s_editor's own ambiguous-match detection (which only sees
+    # ONE mapping at a time) silently apply whichever happens to run last.
+    seen_hostports = set()
+    for i, hp in enumerate(host_ports):
+        key = (hp.kind, hp.namespace, hp.name, hp.container, hp.container_port, hp.protocol)
+        if key in seen_hostports:
+            raise ManifestError(
+                "CONFIG_MAPPING_INVALID",
+                f"'{context}.hostPorts' has more than one mapping targeting {hp.kind} '{hp.name}' "
+                f"container '{hp.container}' containerPort {hp.container_port}/{hp.protocol}.",
+                details=[{"field": f"{context}.hostPorts[{i}]"}],
+            )
+        seen_hostports.add(key)
+
+    seen_nodeports = set()
+    for i, np in enumerate(node_ports):
+        key = (np.namespace, np.name, np.service_port, np.protocol)
+        if key in seen_nodeports:
+            raise ManifestError(
+                "CONFIG_MAPPING_INVALID",
+                f"'{context}.nodePorts' has more than one mapping targeting Service '{np.name}' "
+                f"servicePort {np.service_port}/{np.protocol}.",
+                details=[{"field": f"{context}.nodePorts[{i}]"}],
+            )
+        seen_nodeports.add(key)
+
+    return KubernetesFileMapping(file=file, host_ports=host_ports, node_ports=node_ports)
+
+
 def _validate_config(data: Any, known_names: set) -> Optional[ConfigMappings]:
     if data is None:
         return None
@@ -376,10 +587,22 @@ def _validate_config(data: Any, known_names: set) -> Optional[ConfigMappings]:
         )
     compose = [_validate_compose_mapping(item, i, known_names) for i, item in enumerate(compose_raw)]
 
-    if not dotenv and not compose:
-        raise ManifestError("MANIFEST_INVALID", "'config' was given but declares no 'dotenv' or 'compose' entries.")
+    kubernetes_raw = data.get("kubernetes", [])
+    if not isinstance(kubernetes_raw, list):
+        raise ManifestError("MANIFEST_INVALID", "'config.kubernetes' must be a list.")
+    if len(kubernetes_raw) > MAX_CONFIG_FILES_PER_KIND:
+        raise ManifestError(
+            "MANIFEST_INVALID", f"'config.kubernetes' has {len(kubernetes_raw)} entries, exceeding the "
+            f"{MAX_CONFIG_FILES_PER_KIND}-entry limit."
+        )
+    kubernetes = [_validate_kubernetes_mapping(item, i, known_names) for i, item in enumerate(kubernetes_raw)]
 
-    return ConfigMappings(dotenv=dotenv, compose=compose)
+    if not dotenv and not compose and not kubernetes:
+        raise ManifestError(
+            "MANIFEST_INVALID", "'config' was given but declares no 'dotenv', 'compose', or 'kubernetes' entries."
+        )
+
+    return ConfigMappings(dotenv=dotenv, compose=compose, kubernetes=kubernetes)
 
 
 def validate_manifest(data: Dict[str, Any]) -> ProjectManifest:

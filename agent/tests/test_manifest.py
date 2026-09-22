@@ -222,3 +222,238 @@ def test_old_dotfile_portforge_yml_is_a_different_file_entirely(tmp_path):
     """
     (tmp_path / ".portforge.yml").write_text("project: legacy\nports: []\n", encoding="utf-8")
     assert discover_manifest_path(str(tmp_path)) is None
+
+
+# ---------------------------------------------------------------------------
+# v1.1-C: config.kubernetes schema
+# ---------------------------------------------------------------------------
+
+_K8S_BASE_YAML = """
+version: 1
+project: jarvis
+target:
+  host: NTMKEYA
+ports:
+  frontend:
+    purpose: frontend
+  api_nodeport:
+    purpose: generic
+    preferred: 30080
+config:
+  kubernetes:
+    - file: k8s/app.yaml
+      hostPorts:
+        - kind: Deployment
+          name: frontend
+          container: web
+          containerPort: 3000
+          allocation: frontend
+      nodePorts:
+        - name: api-svc
+          servicePort: 8080
+          allocation: api_nodeport
+"""
+
+
+def test_kubernetes_config_parses_valid_schema():
+    manifest = validate_manifest(parse_manifest_yaml(_K8S_BASE_YAML))
+    assert len(manifest.config.kubernetes) == 1
+    mapping = manifest.config.kubernetes[0]
+    assert mapping.file == "k8s/app.yaml"
+    assert mapping.host_ports[0].kind == "Deployment"
+    assert mapping.host_ports[0].allocation == "frontend"
+    assert mapping.node_ports[0].service_port == 8080
+    assert mapping.node_ports[0].allocation == "api_nodeport"
+
+
+def test_existing_manifest_without_kubernetes_key_still_valid():
+    """Backward compatibility -- a v1.0/v1.1-A/B manifest with no
+    'kubernetes' config key at all must still validate exactly as before.
+    """
+    manifest = validate_manifest(parse_manifest_yaml(VALID_YAML))
+    assert manifest.config is None or manifest.config.kubernetes == []
+
+
+def test_existing_dotenv_only_manifest_gets_empty_kubernetes_list():
+    yaml_text = """
+version: 1
+project: jarvis
+target:
+  host: NTMKEYA
+ports:
+  frontend:
+    purpose: frontend
+config:
+  dotenv:
+    - file: .env
+      values:
+        FRONTEND_PORT: frontend
+"""
+    manifest = validate_manifest(parse_manifest_yaml(yaml_text))
+    assert manifest.config.kubernetes == []
+    assert len(manifest.config.dotenv) == 1
+
+
+def test_kubernetes_unknown_field_rejected():
+    bad = _K8S_BASE_YAML.replace("container: web", "container: web\n          extra: nope")
+    with pytest.raises(ManifestError) as exc_info:
+        validate_manifest(parse_manifest_yaml(bad))
+    assert exc_info.value.code == "MANIFEST_INVALID"
+
+
+def test_kubernetes_unsupported_kind_rejected():
+    bad = _K8S_BASE_YAML.replace("kind: Deployment", "kind: DaemonSet")
+    with pytest.raises(ManifestError) as exc_info:
+        validate_manifest(parse_manifest_yaml(bad))
+    assert exc_info.value.code == "MANIFEST_INVALID"
+    assert "kind" in exc_info.value.message.lower()
+
+
+def test_kubernetes_missing_file_field_rejected():
+    bad = _K8S_BASE_YAML.replace("file: k8s/app.yaml", "notfile: k8s/app.yaml")
+    with pytest.raises(ManifestError) as exc_info:
+        validate_manifest(parse_manifest_yaml(bad))
+    assert exc_info.value.code == "MANIFEST_INVALID"
+
+
+def test_kubernetes_invalid_container_port_rejected():
+    bad = _K8S_BASE_YAML.replace("containerPort: 3000", "containerPort: 99999")
+    with pytest.raises(ManifestError) as exc_info:
+        validate_manifest(parse_manifest_yaml(bad))
+    assert exc_info.value.code == "MANIFEST_INVALID"
+
+
+def test_kubernetes_invalid_node_service_port_rejected():
+    bad = _K8S_BASE_YAML.replace("servicePort: 8080", "servicePort: 0")
+    with pytest.raises(ManifestError) as exc_info:
+        validate_manifest(parse_manifest_yaml(bad))
+    assert exc_info.value.code == "MANIFEST_INVALID"
+
+
+def test_kubernetes_hostport_allocation_reference_must_exist():
+    bad = _K8S_BASE_YAML.replace("allocation: frontend\n", "allocation: ghost\n")
+    with pytest.raises(ManifestError) as exc_info:
+        validate_manifest(parse_manifest_yaml(bad))
+    assert exc_info.value.code == "CONFIG_MAPPING_INVALID"
+
+
+def test_kubernetes_nodeport_allocation_reference_must_exist():
+    bad = _K8S_BASE_YAML.replace("allocation: api_nodeport", "allocation: ghost_nodeport")
+    with pytest.raises(ManifestError) as exc_info:
+        validate_manifest(parse_manifest_yaml(bad))
+    assert exc_info.value.code == "CONFIG_MAPPING_INVALID"
+
+
+def test_kubernetes_entry_with_no_hostports_or_nodeports_rejected():
+    bad = """
+version: 1
+project: jarvis
+target:
+  host: NTMKEYA
+ports:
+  frontend:
+    purpose: frontend
+config:
+  kubernetes:
+    - file: k8s/app.yaml
+"""
+    with pytest.raises(ManifestError) as exc_info:
+        validate_manifest(parse_manifest_yaml(bad))
+    assert exc_info.value.code == "MANIFEST_INVALID"
+
+
+def test_kubernetes_duplicate_hostport_mapping_rejected():
+    bad = """
+version: 1
+project: jarvis
+target:
+  host: NTMKEYA
+ports:
+  a:
+    purpose: frontend
+  b:
+    purpose: frontend
+config:
+  kubernetes:
+    - file: k8s/app.yaml
+      hostPorts:
+        - kind: Deployment
+          name: frontend
+          container: web
+          containerPort: 3000
+          allocation: a
+        - kind: Deployment
+          name: frontend
+          container: web
+          containerPort: 3000
+          allocation: b
+"""
+    with pytest.raises(ManifestError) as exc_info:
+        validate_manifest(parse_manifest_yaml(bad))
+    assert exc_info.value.code == "CONFIG_MAPPING_INVALID"
+
+
+def test_kubernetes_duplicate_nodeport_mapping_rejected():
+    bad = """
+version: 1
+project: jarvis
+target:
+  host: NTMKEYA
+ports:
+  a:
+    purpose: generic
+    preferred: 30001
+  b:
+    purpose: generic
+    preferred: 30002
+config:
+  kubernetes:
+    - file: k8s/app.yaml
+      nodePorts:
+        - name: api-svc
+          servicePort: 8080
+          allocation: a
+        - name: api-svc
+          servicePort: 8080
+          allocation: b
+"""
+    with pytest.raises(ManifestError) as exc_info:
+        validate_manifest(parse_manifest_yaml(bad))
+    assert exc_info.value.code == "CONFIG_MAPPING_INVALID"
+
+
+def test_kubernetes_namespace_field_optional_and_parses():
+    with_ns = _K8S_BASE_YAML.replace("name: frontend\n          container", "name: frontend\n          namespace: dev\n          container")
+    manifest = validate_manifest(parse_manifest_yaml(with_ns))
+    assert manifest.config.kubernetes[0].host_ports[0].namespace == "dev"
+
+
+def test_kubernetes_default_protocol_is_tcp():
+    manifest = validate_manifest(parse_manifest_yaml(_K8S_BASE_YAML))
+    assert manifest.config.kubernetes[0].host_ports[0].protocol == "tcp"
+    assert manifest.config.kubernetes[0].node_ports[0].protocol == "tcp"
+
+
+def test_kubernetes_too_many_hostports_rejected():
+    entries = "\n".join(
+        f"        - kind: Deployment\n          name: frontend\n          container: web\n          "
+        f"containerPort: {3000 + i}\n          allocation: frontend"
+        for i in range(51)
+    )
+    bad = f"""
+version: 1
+project: jarvis
+target:
+  host: NTMKEYA
+ports:
+  frontend:
+    purpose: frontend
+config:
+  kubernetes:
+    - file: k8s/app.yaml
+      hostPorts:
+{entries}
+"""
+    with pytest.raises(ManifestError) as exc_info:
+        validate_manifest(parse_manifest_yaml(bad))
+    assert exc_info.value.code == "MANIFEST_INVALID"

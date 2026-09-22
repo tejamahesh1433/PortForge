@@ -100,6 +100,36 @@ def _hash_manifest_for_workflow(manifest: ProjectManifest) -> str:
                 ),
                 key=lambda m: m["file"],
             ),
+            "kubernetes": sorted(
+                (
+                    {
+                        "file": m.file,
+                        "host_ports": sorted(
+                            (
+                                {
+                                    "kind": hp.kind, "name": hp.name, "namespace": hp.namespace,
+                                    "container": hp.container, "container_port": hp.container_port,
+                                    "protocol": hp.protocol, "allocation": hp.allocation,
+                                }
+                                for hp in m.host_ports
+                            ),
+                            key=lambda hp: (hp["kind"], hp["name"], hp["container"], hp["container_port"]),
+                        ),
+                        "node_ports": sorted(
+                            (
+                                {
+                                    "name": np.name, "namespace": np.namespace, "service_port": np.service_port,
+                                    "protocol": np.protocol, "allocation": np.allocation,
+                                }
+                                for np in m.node_ports
+                            ),
+                            key=lambda np: (np["name"], np["service_port"]),
+                        ),
+                    }
+                    for m in manifest.config.kubernetes
+                ),
+                key=lambda m: m["file"],
+            ),
         }
     encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -131,6 +161,8 @@ def prepare_workflow(client, manifest: ProjectManifest, host: NormalizedHostRef,
             config_files.append({"file": m.file, "type": "dotenv"})
         for m in manifest.config.compose:
             config_files.append({"file": m.file, "type": "compose"})
+        for m in manifest.config.kubernetes:
+            config_files.append({"file": m.file, "type": "kubernetes"})
 
     for c in candidates:
         if c["candidate_port"] is None:
@@ -232,7 +264,9 @@ def apply_workflow(client, manifest: ProjectManifest, host: NormalizedHostRef, p
                 f"request_id '{request_id}' was already used with a materially different manifest/config.",
                 details=[{"request_id": request_id}],
             )
-        has_config = manifest.config is not None and bool(manifest.config.dotenv or manifest.config.compose)
+        has_config = manifest.config is not None and bool(
+            manifest.config.dotenv or manifest.config.compose or manifest.config.kubernetes
+        )
         if existing["status"] == "APPLIED" or (existing["status"] == "ALLOCATED" and not has_config):
             # Pure replay -- touches neither Central nor any project file.
             return _result_from_record(existing)
@@ -326,7 +360,7 @@ def apply_workflow(client, manifest: ProjectManifest, host: NormalizedHostRef, p
     allocated_record = _save_workflow_record(
         project_root, {**base_record, "status": "ALLOCATED", "mutation_id": None, "config_applied": False}
     )
-    if manifest.config is None or (not manifest.config.dotenv and not manifest.config.compose):
+    if manifest.config is None or not (manifest.config.dotenv or manifest.config.compose or manifest.config.kubernetes):
         return _result_from_record(allocated_record)
 
     mutation_id: Optional[str] = None

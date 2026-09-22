@@ -1170,11 +1170,14 @@ def _cmd_config_plan(args: argparse.Namespace) -> int:
             for c in f.changes:
                 if f.kind == "dotenv":
                     print(f"      {c['key']}: {c['before']!r} -> {c['after']!r} ({c['action']})")
-                else:
+                elif f.kind == "compose":
                     print(
                         f"      {c['service']} {c['container_port']}/{c['protocol']}: "
                         f"{c['before']!r} -> {c['after']!r} ({c['action']})"
                     )
+                else:  # kubernetes
+                    target = f"{c['kind']} {c['name']}" + (f" container {c['container']}" if c["container"] else "")
+                    print(f"      {target} {c['field']} (match {c['match_port']}): {c['before']!r} -> {c['after']!r} ({c['action']})")
         print(f"\nNo files were changed. Run 'config apply' to write these changes (mutation_id={plan.mutation_id}).")
 
     return 0

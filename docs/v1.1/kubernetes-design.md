@@ -122,3 +122,47 @@ apply` into a throwaway `kind` cluster, then `kubectl delete`) confirming
 the written `hostPort`/`nodePort` values are both syntactically valid and
 semantically what was intended — the same rigor Phase 8C applied to
 Compose, not a lighter bar just because it's a new file kind.
+
+## v1.1-C implementation corrections (evidence-based, added post-implementation)
+
+Two things this design sketch got not-quite-right, corrected during
+v1.1-C's actual implementation and physical validation — see
+`docs/v1.1/v1.1-c-implementation.md` for the full evidence.
+
+**1. Missing `containerPort`/`servicePort` entries FAIL, they do not get
+invented.** This doc originally said to mirror
+`compose_editor.py::apply_port_mapping()`'s "zero matches → append a new
+entry" behavior. The actual v1.1-C task spec was more conservative
+(§8/§9: "If a mapping references a missing container/port entry, fail
+during plan. Do not invent Kubernetes structure silently.") and the
+implementation follows that instead: a Kubernetes container port entry
+has more shape (name, protocol casing, sibling fields) than a Compose
+short-syntax string, so synthesizing one would mean guessing. Zero
+matches on the manifest-declared `containerPort`/`servicePort` raises
+`KUBERNETES_PORT_NOT_FOUND` with zero mutation, requiring the YAML to
+already declare the port entry PortForge is meant to fill in.
+
+**2. `kind`'s node runs as a separate Docker container — `hostPort`/
+`nodePort` do NOT automatically reach the Windows host.** This doc's "in
+a local single-node cluster... 'reserve a host port on this host' is
+well-defined again" reasoning is correct for the SCHEDULING question
+(there's only one node, so a `hostPort` allocation maps unambiguously to
+a specific, ownable resource — no scheduler ambiguity). It is **not**
+automatically true for the CONNECTIVITY question with `kind` specifically:
+`kind create cluster`'s default behavior only publishes the Kubernetes
+API server port from the node container to the Windows host
+(`docker inspect` on the node container shows only `6443/tcp`). A Pod's
+`hostPort` genuinely binds on the node's own network namespace (verified:
+`curl` from inside the node container reaches it, `HTTP 200`) and a
+Service `nodePort` is genuinely dispatched by kube-proxy (same
+verification) — PortForge's job (writing correct YAML that Kubernetes
+correctly honors) is proven complete and correct. But neither port is
+reachable from the Windows host unless the `kind` cluster was created
+with an explicit `extraPortMappings` entry in its cluster config matching
+the port PortForge allocated — a cluster-operator decision, outside
+PortForge's scope (PortForge writes files, never touches the cluster; see
+`21` above). Docker Desktop's built-in Kubernetes was not available to
+compare directly in this validation (see v1.1-C's known limitations), and
+may behave differently since it does not run its node as a nested Docker
+container the way `kind` does — this is noted as an open question, not
+claimed either way without evidence.
