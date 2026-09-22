@@ -9,16 +9,34 @@ docs/phase8a_agent_allocation.md for the full contract.
 from __future__ import annotations
 
 import uuid
+from typing import Optional
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..schemas.allocation import AllocationIn, AllocationOut
+from ..schemas.common import Page
 from ..repositories.allocation_repository import AllocationRepository
 from ..services import allocation_service
 
 router = APIRouter(prefix="/allocations", tags=["allocations"])
+
+
+@router.get("", response_model=Page[AllocationOut])
+def list_allocations(
+    host_id: Optional[uuid.UUID] = Query(default=None),
+    project: Optional[str] = Query(default=None, max_length=255),
+    status: Optional[str] = Query(default=None, pattern="^(active|released)$"),
+    search: Optional[str] = Query(default=None, max_length=255),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+) -> Page[AllocationOut]:
+    items, total = allocation_service.list_allocations(
+        db, host_id=host_id, project=project, status=status, search=search, limit=limit, offset=offset
+    )
+    return Page(items=items, total=total, limit=limit, offset=offset)
 
 
 @router.post("", response_model=AllocationOut)

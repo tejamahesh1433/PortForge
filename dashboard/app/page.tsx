@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useMemo } from "react";
-import { AlertTriangle, ArrowUpRight, Folder, Lock, Network, Server } from "lucide-react";
+import { AlertTriangle, ArrowUpRight, Folder, Layers, Lock, Network, Server } from "lucide-react";
 import { HostGrid } from "@/components/data/host-grid";
 import { MetricCard } from "@/components/data/metric-card";
 import { ActivityFeed } from "@/components/activity/activity-feed";
@@ -10,6 +10,7 @@ import { ErrorState } from "@/components/feedback/error-state";
 import { LoadingState } from "@/components/feedback/loading-state";
 import { PageHeader } from "@/components/layout/page-header";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { useAllocations } from "@/hooks/use-allocations";
 import { useConflicts } from "@/hooks/use-conflicts";
 import { useHealth } from "@/hooks/use-health";
 import { useHosts } from "@/hooks/use-hosts";
@@ -25,12 +26,20 @@ export default function OverviewPage() {
   const hosts = useHosts({ limit: OVERVIEW_HOST_LIMIT });
   const ports = usePorts({ limit: OVERVIEW_PORT_LIMIT });
   const reservations = useReservations({ limit: 1 });
+  const activeAllocations = useAllocations({ status: "active", limit: 1 });
   const projects = useProjects();
   const conflicts = useConflicts();
   const health = useHealth();
 
-  const isLoading = hosts.isPending || ports.isPending || projects.isPending || reservations.isPending || conflicts.isPending;
-  const firstError = hosts.error ?? ports.error ?? projects.error ?? reservations.error ?? conflicts.error;
+  const isLoading =
+    hosts.isPending ||
+    ports.isPending ||
+    projects.isPending ||
+    reservations.isPending ||
+    conflicts.isPending ||
+    activeAllocations.isPending;
+  const firstError =
+    hosts.error ?? ports.error ?? projects.error ?? reservations.error ?? conflicts.error ?? activeAllocations.error;
 
   const bindingData = useMemo(() => {
     if (!ports.data?.items || !hosts.data?.items) return [];
@@ -80,6 +89,7 @@ export default function OverviewPage() {
             void projects.refetch();
             void reservations.refetch();
             void conflicts.refetch();
+            void activeAllocations.refetch();
           }}
         />
       </div>
@@ -102,7 +112,7 @@ export default function OverviewPage() {
         }
       />
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-6">
         <MetricCard
           label="Hosts"
           value={hosts.data?.total ?? 0}
@@ -111,11 +121,11 @@ export default function OverviewPage() {
           accent={offlineCount > 0 ? "red" : staleCount > 0 ? "amber" : "blue"}
           href="/hosts"
         />
-        <MetricCard 
-          label="Port bindings" 
-          value={ports.data?.total ?? 0} 
-          icon={Network} 
-          accent="default" 
+        <MetricCard
+          label="Port bindings"
+          value={ports.data?.total ?? 0}
+          icon={Network}
+          accent="default"
           detail={`${portStats.docker} docker · ${portStats.process} process · ${portStats.system} sys`}
           href="/ports"
         />
@@ -126,6 +136,14 @@ export default function OverviewPage() {
           icon={Lock}
           accent="violet"
           href="/reservations"
+        />
+        <MetricCard
+          label="Active allocations"
+          value={activeAllocations.data?.total ?? 0}
+          icon={Layers}
+          accent="blue"
+          detail="Atomic port bundles"
+          href="/allocations"
         />
         <MetricCard
           label="Conflicts"

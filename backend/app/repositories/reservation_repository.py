@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Optional, Sequence
+from typing import List, Optional, Sequence
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -13,6 +13,18 @@ from ..models.reservation import CentralReservation
 class ReservationRepository:
     def __init__(self, db: Session):
         self.db = db
+
+    def list_by_allocation_ids(self, allocation_ids: List[uuid.UUID]) -> Sequence[CentralReservation]:
+        """v1.1-D: ONE query for every reservation belonging to a whole
+        page of allocations, instead of `list(host_id=...)` called once
+        per allocation and filtered in Python (the existing single-
+        allocation pattern in services/allocation_service.py -- fine for
+        one bundle, an N+1 for a list page; see task Sec22).
+        """
+        if not allocation_ids:
+            return []
+        stmt = select(CentralReservation).where(CentralReservation.allocation_id.in_(allocation_ids))
+        return self.db.execute(stmt).scalars().all()
 
     def get(self, reservation_id: uuid.UUID) -> Optional[CentralReservation]:
         return self.db.get(CentralReservation, reservation_id)

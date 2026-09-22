@@ -143,17 +143,25 @@ def _build_allocation_out(db: Session, allocation: Allocation, bind_probe: str =
     host = host_repo.get(allocation.host_id)
     reservation_repo = ReservationRepository(db)
     rows, _ = reservation_repo.list(host_id=allocation.host_id, limit=1000)
-    entries = [
-        AllocationEntryOut(
-            name=r.request_name or "",
-            purpose=r.purpose or "",
-            protocol=r.protocol.value if hasattr(r.protocol, "value") else r.protocol,
-            port=r.port,
-            reservation_id=r.id,
+    own_rows = [r for r in rows if r.allocation_id == allocation.id]
+    # v1.1-D: live per-entry evidence -- bounded by MAX_BUNDLE_SIZE (<=20),
+    # not a list-page N+1 (see list_allocations below for the batched
+    # equivalent used there).
+    entries = []
+    for r in own_rows:
+        protocol_value = r.protocol.value if hasattr(r.protocol, "value") else r.protocol
+        evidence = probe_service.get_probe_evidence(db, allocation.host_id, r.port, protocol_value, r.bind_address or "0.0.0.0")
+        entries.append(
+            AllocationEntryOut(
+                name=r.request_name or "",
+                purpose=r.purpose or "",
+                protocol=protocol_value,
+                port=r.port,
+                reservation_id=r.id,
+                bind_address=r.bind_address,
+                bind_probe=evidence.bind_probe,
+            )
         )
-        for r in rows
-        if r.allocation_id == allocation.id
-    ]
     return AllocationOut(
         allocation_id=allocation.id,
         project=allocation.project,
@@ -163,7 +171,78 @@ def _build_allocation_out(db: Session, allocation: Allocation, bind_probe: str =
         validation=_build_validation(host, bind_probe=bind_probe),
         created_at=allocation.created_at,
         released_at=allocation.released_at,
+        request_id=allocation.request_id,
     )
+
+
+def list_allocations(
+    db: Session,
+    host_id: Optional[uuid.UUID] = None,
+    project: Optional[str] = None,
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> "tuple[List[AllocationOut], int]":
+    """v1.1-D: the Allocations page's list source (task Sec2). Builds every
+    row's entries/host/evidence from THREE total queries (allocations page,
+    batch-resolved hosts, batch-resolved reservations) plus one batched
+    probe-evidence query -- never one query per allocation (task Sec22).
+    """
+    allocation_repo = AllocationRepository(db)
+    rows, total = allocation_repo.list(
+        host_id=host_id, project=project, status=status, search=search, limit=limit, offset=offset
+    )
+    if not rows:
+        return [], total
+
+    host_ids = list({a.host_id for a in rows})
+    hosts_by_id = {h.id: h for h in HostRepository(db).get_many(host_ids)}
+
+    allocation_ids = [a.id for a in rows]
+    reservation_rows = ReservationRepository(db).list_by_allocation_ids(allocation_ids)
+    reservations_by_allocation: Dict[uuid.UUID, List] = {}
+    for r in reservation_rows:
+        if r.allocation_id is not None:
+            reservations_by_allocation.setdefault(r.allocation_id, []).append(r)
+
+    evidence_map = probe_service.get_probe_evidence_map(db, host_ids)
+
+    results: List[AllocationOut] = []
+    for allocation in rows:
+        host = hosts_by_id.get(allocation.host_id)
+        if host is None:  # pragma: no cover - defensive; a host is never deleted out from under its allocations
+            continue
+        entries = []
+        for r in reservations_by_allocation.get(allocation.id, []):
+            protocol_value = r.protocol.value if hasattr(r.protocol, "value") else r.protocol
+            key = (allocation.host_id, r.port, protocol_value, r.bind_address or "0.0.0.0")
+            evidence = evidence_map.get(key)
+            entries.append(
+                AllocationEntryOut(
+                    name=r.request_name or "",
+                    purpose=r.purpose or "",
+                    protocol=protocol_value,
+                    port=r.port,
+                    reservation_id=r.id,
+                    bind_address=r.bind_address,
+                    bind_probe=evidence.bind_probe if evidence else probe_service.NOT_REMOTE_CAPABLE,
+                )
+            )
+        results.append(
+            AllocationOut(
+                allocation_id=allocation.id,
+                project=allocation.project,
+                host=AllocationHostOut(id=host.id, hostname=host.hostname),
+                status=allocation.status,
+                allocations=entries,
+                validation=_build_validation(host),
+                created_at=allocation.created_at,
+                released_at=allocation.released_at,
+                request_id=allocation.request_id,
+            )
+        )
+    return results, total
 
 
 def _validate_purposes(requests: List[AllocationRequestItem]) -> None:

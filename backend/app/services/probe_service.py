@@ -228,6 +228,32 @@ def get_probe_evidence(
     return ProbeEvidence(bind_probe=classify_bind_probe(probe), probe=probe)
 
 
+def get_probe_evidence_map(
+    db: Session, host_ids: "list[uuid.UUID]"
+) -> "dict[tuple[uuid.UUID, int, str, str], ProbeEvidence]":
+    """v1.1-D: batched sibling of `get_probe_evidence` for rendering a
+    whole page of allocations without one query per entry (task Sec22).
+    ONE query for every host on the page (`ProbeRepository.list_recent_for_hosts`),
+    then the latest-per-binding pick and freshness classification both
+    happen in Python. Missing entries (a binding with no probe history at
+    all) are simply absent from the returned map -- callers fall back to
+    `classify_bind_probe(None)` (`not_remote_capable`), identical to what
+    `get_probe_evidence` itself would return.
+    """
+    now = datetime.now(timezone.utc)
+    repo = ProbeRepository(db)
+    rows = repo.list_recent_for_hosts(list(dict.fromkeys(host_ids)))
+
+    latest: "dict[tuple[uuid.UUID, int, str, str], HostProbe]" = {}
+    for probe in rows:  # already newest-first -- first occurrence per key wins
+        protocol_value = probe.protocol.value if hasattr(probe.protocol, "value") else probe.protocol
+        key = (probe.host_id, probe.port, protocol_value, probe.bind_address)
+        if key not in latest:
+            latest[key] = probe
+
+    return {key: ProbeEvidence(bind_probe=classify_bind_probe(probe, now), probe=probe) for key, probe in latest.items()}
+
+
 def resolve_with_probe_awareness(
     db: Session,
     host_id: uuid.UUID,

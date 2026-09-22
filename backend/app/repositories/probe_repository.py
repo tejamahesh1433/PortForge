@@ -43,6 +43,43 @@ class ProbeRepository:
         )
         return list(self.db.execute(stmt).scalars().all())
 
+    def host_has_probe_history(self, host_id: uuid.UUID) -> bool:
+        """v1.1-D task Sec8: a single bounded EXISTS check -- true only if
+        this host's agent has actually answered at least one probe
+        (COMPLETED or FAILED), never inferred from PENDING/DELIVERED alone
+        (those just mean Central asked, not that the agent proved it can
+        answer). Only ever called for a single host (host detail), never in
+        a list-page loop -- see services/allocation_service.py's own
+        batched equivalent for why a per-row version would be an N+1.
+        """
+        stmt = (
+            select(HostProbe.id)
+            .where(HostProbe.host_id == host_id, HostProbe.status.in_(("COMPLETED", "FAILED")))
+            .limit(1)
+        )
+        return self.db.execute(stmt).first() is not None
+
+    def list_recent_for_hosts(self, host_ids: List[uuid.UUID], limit: int = 500) -> List[HostProbe]:
+        """v1.1-D: ONE batched query for a whole page of allocations,
+        instead of one `find_latest_for_binding` call per allocation entry
+        (an N+1 the task explicitly warns against -- Sec22). Ordered
+        newest-first so a caller building a `(host_id, port, protocol,
+        bind_address) -> HostProbe` map by "first occurrence wins" ends up
+        with the latest probe per binding, matching
+        `find_latest_for_binding`'s own semantics. Bounded by `limit`
+        regardless of how many hosts are passed -- a deliberate cap, not a
+        per-host limit, since this only ever backs one bounded list page.
+        """
+        if not host_ids:
+            return []
+        stmt = (
+            select(HostProbe)
+            .where(HostProbe.host_id.in_(host_ids))
+            .order_by(HostProbe.created_at.desc())
+            .limit(limit)
+        )
+        return list(self.db.execute(stmt).scalars().all())
+
     def find_latest_for_binding(
         self, host_id: uuid.UUID, port: int, protocol: str, bind_address: str
     ) -> Optional[HostProbe]:

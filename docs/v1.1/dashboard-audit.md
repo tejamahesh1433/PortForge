@@ -21,21 +21,19 @@ components were found during this review.
 
 ## P1 — important improvements
 
-1. **No allocation visibility at all.** This is the single biggest gap.
-   Phase 8A-8D built a whole atomic-allocation/workflow/config-mutation
-   system, and the dashboard's only trace of it is a small "allocated"
-   badge on a reservation row (added in Phase 8A) with the allocation ID
-   in a tooltip. There is no way to:
-   - list active allocations, or see one's full bundle (all ports
-     together) in one place
-   - release an allocation from the UI (only `portforge allocation
-     release` today)
-   - see a workflow's status (`ALLOCATED`/`APPLIED`/`FAILED`) or a config
-     mutation's status (`PLANNED`/`APPLIED`/`ROLLED_BACK`)
-   - see which project a mutation touched which files
-   An operator debugging "why did the coding agent's config apply fail"
-   today has to shell into the CLI (`portforge config status <id>`) —
-   there's no dashboard path to that answer at all.
+1. **~~No allocation visibility at all.~~ RESOLVED in v1.1-D** — see
+   `docs/v1.1/v1.1-d-implementation.md`. `/allocations` (list, filterable,
+   URL-backed) and `/allocations/[id]` (detail, release action, live
+   per-binding probe evidence) now exist, plus a Project Detail
+   Allocations tab and an Overview metric card. Workflow status
+   (`ALLOCATED`/`APPLIED`/`FAILED`) and config-mutation status
+   (`PLANNED`/`APPLIED`/`ROLLED_BACK`) remain **not** shown, by design —
+   v1.1-D's own data audit confirmed both are genuinely agent-local
+   (`.portforge/workflows/`, `.portforge/mutations/`), never synced to
+   Central, so a global view would have to be fabricated. Allocation
+   Detail instead carries a labeled note pointing at the real CLI commands
+   (`portforge workflow status`, `portforge config status`) — this is a
+   deliberate honesty boundary, not a remaining gap in this item.
 
 2. **Stale/offline explanation is a raw enum, not a human sentence.**
    `app/hosts/[hostId]/page.tsx` shows `Health Reason: AGENT_STALE` (or
@@ -45,12 +43,14 @@ components were found during this review.
    exceeds the 2m stale threshold") would close this without inventing
    new data — every value needed is already in the API response.
 
-3. **No remote-probe state surface** — not a v1.0 gap (the capability
-   doesn't exist yet), but flagged here so v1.1-B (remote probe) and this
-   audit stay linked: if remote probing ships, `bind_probe`'s new values
-   (`remote_probe_fresh`/`remote_probe_stale`, see
-   `docs/v1.1/remote-probe-design.md`) need a dashboard home too, most
-   naturally on the host detail page next to health state.
+3. **~~No remote-probe state surface~~ RESOLVED in v1.1-D.** The actual
+   shipped `bind_probe` vocabulary (`verified_free`/`verified_occupied`/
+   `not_remote_capable`/`unavailable`/`expired` — see
+   `docs/v1.1/v1.1-b-implementation.md`, not the `remote_probe_fresh`/
+   `_stale` names this audit originally guessed at) is now shown via
+   `BindProbeBadge` on allocation list/detail, and Host Detail gained a
+   dedicated Remote Probe Capability card. See
+   `docs/v1.1/v1.1-d-implementation.md` §5/§6.
 
 4. **Reservations page fetches all hosts (≤500) just to resolve
    hostnames**, on every load, client-side

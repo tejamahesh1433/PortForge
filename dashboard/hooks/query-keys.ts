@@ -1,5 +1,6 @@
 import type {
   GetRecommendationParams,
+  ListAllocationsParams,
   ListConflictsParams,
   ListHostsParams,
   ListPortsParams,
@@ -28,6 +29,10 @@ export const queryKeys = {
   },
   reservations: {
     list: (params: ListReservationsParams = {}) => ["reservations", "list", params] as const,
+  },
+  allocations: {
+    list: (params: ListAllocationsParams = {}) => ["allocations", "list", params] as const,
+    detail: (allocationId: string) => ["allocations", "detail", allocationId] as const,
   },
   conflicts: {
     list: (params: ListConflictsParams = {}) => ["conflicts", "list", params] as const,

@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, Index, String
+from sqlalchemy import Boolean, DateTime, Index, Integer, String
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -32,6 +32,16 @@ class Host(Base, TimestampMixin):
     architecture: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     agent_version: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     docker_available: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # v1.1-D: the raw protocol_version an agent last reported on enroll/
+    # heartbeat (see services/compatibility_service.py). v1.1-A deliberately
+    # did NOT persist this -- see that module's docstring -- but Host
+    # Compatibility display (v1.1-D task Sec7) has no way to survive between
+    # requests without it. Only the raw integer is stored; compatibility
+    # itself (compatible/warning/unknown) is always recomputed live via the
+    # existing evaluate_protocol_compatibility(), never a stored verdict
+    # that could go stale if Central's own PROTOCOL_VERSION ever changes.
+    protocol_version: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True))

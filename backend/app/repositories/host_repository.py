@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Optional, Sequence
+from typing import List, Optional, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -17,6 +17,15 @@ class HostRepository:
 
     def get(self, host_id: uuid.UUID) -> Optional[Host]:
         return self.db.get(Host, host_id)
+
+    def get_many(self, host_ids: List[uuid.UUID]) -> Sequence[Host]:
+        """v1.1-D: ONE query to resolve every host referenced by a page of
+        allocations, instead of one `get()` per row (task Sec22).
+        """
+        if not host_ids:
+            return []
+        stmt = select(Host).where(Host.id.in_(host_ids))
+        return self.db.execute(stmt).scalars().all()
 
     def list(self, limit: int = 50, offset: int = 0) -> Sequence[Host]:
         stmt = select(Host).order_by(Host.last_seen.desc()).limit(limit).offset(offset)
@@ -37,6 +46,7 @@ class HostRepository:
         agent_version: Optional[str],
         docker_available: bool,
         now: datetime,
+        protocol_version: Optional[int] = None,
     ) -> Host:
         host = self.get(host_id)
         if host is None:
@@ -51,6 +61,7 @@ class HostRepository:
                 first_seen=now,
                 last_seen=now,
                 status="online",
+                protocol_version=protocol_version,
             )
             self.db.add(host)
         else:
@@ -62,6 +73,12 @@ class HostRepository:
             host.docker_available = docker_available
             host.last_seen = now
             host.status = "online"
+            # A request that omits protocol_version (a legacy agent, or a
+            # transport that doesn't carry it) must not erase a
+            # previously-known value -- only overwrite when a real value is
+            # actually reported this time.
+            if protocol_version is not None:
+                host.protocol_version = protocol_version
 
         self.db.flush()
         return host

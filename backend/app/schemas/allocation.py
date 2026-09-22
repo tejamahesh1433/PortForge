@@ -76,6 +76,14 @@ class AllocationEntryOut(ApiModel):
     protocol: str
     port: int
     reservation_id: uuid.UUID
+    # v1.1-D, both additive/optional for backward compatibility with any
+    # caller constructing this schema without them:
+    bind_address: Optional[str] = None
+    # Live-computed at read time from v1.1-B's HostProbe data, never a
+    # stored creation-time snapshot -- see docs/v1.1/v1.1-d-data-audit.md
+    # "Remote-probe evidence on allocations" for why. Same 5-value
+    # contract as AllocationValidationOut.bind_probe.
+    bind_probe: str = "not_remote_capable"
 
 
 class AllocationValidationOut(ApiModel):
@@ -103,3 +111,7 @@ class AllocationOut(ApiModel):
     validation: AllocationValidationOut
     created_at: datetime
     released_at: Optional[datetime]
+    # v1.1-D: additive, optional -- the caller-supplied idempotency key
+    # (Sec13), already stored on the Allocation row, simply never exposed
+    # before now.
+    request_id: Optional[str] = None

@@ -17,6 +17,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { useHost, useHostPorts, useHostDiagnostics } from "@/hooks/use-hosts";
 import { formatAbsoluteTime } from "@/lib/utils/format";
 import { FreshnessWarning } from "@/components/status/freshness-warning";
+import { CompatibilityCard, ProbeCapabilityCard } from "@/components/status/host-compatibility-card";
 
 function DetailRow({ label, value }: { label: string; value: string }) {
   return (
@@ -257,6 +258,9 @@ function HostDiagnosticsTab({ hostId }: { hostId: string }) {
           <DetailRow label="Offline Threshold" value={`${data.offline_threshold_seconds}s`} />
         </CardContent>
       </Card>
+
+      <CompatibilityCard host={data.host} />
+      <ProbeCapabilityCard capability={data.probe_capability ?? "unknown"} />
     </div>
   );
 }

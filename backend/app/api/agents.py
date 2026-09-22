@@ -64,6 +64,7 @@ def enroll(payload: EnrollmentRequest, db: Session = Depends(get_db)) -> Enrollm
             architecture=payload.architecture,
             agent_version=payload.agent_version,
             docker_available=payload.docker_available,
+            protocol_version=payload.protocol_version,
         )
     except enrollment_service.EnrollmentError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(exc)) from exc
@@ -93,6 +94,7 @@ def heartbeat(
         agent_version=payload.agent_version,
         docker_available=payload.docker_available,
         timestamp=payload.timestamp,
+        protocol_version=payload.protocol_version,
     )
     compatibility = compatibility_service.evaluate_protocol_compatibility(payload.protocol_version)
 

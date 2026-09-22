@@ -1,5 +1,6 @@
 import { portforgeFetch } from "./client";
 import type {
+  AllocationOut,
   CentralRecommendationOut,
   ConflictOut,
   GetRecommendationParams,
@@ -7,6 +8,7 @@ import type {
   GlobalDiagnosticsOut,
   HostDiagnosticsOut,
   HostOut,
+  ListAllocationsParams,
   ListConflictsParams,
   ListHostsParams,
   ListPortsParams,
@@ -103,6 +105,25 @@ export function deleteDashboardReservation(
     method: "DELETE",
     signal,
   });
+}
+
+/** GET /api/allocations */
+export function listAllocations(
+  params: ListAllocationsParams = {},
+  signal?: AbortSignal,
+): Promise<Page<AllocationOut>> {
+  return portforgeFetch<Page<AllocationOut>>("/api/allocations", { params, signal });
+}
+
+/** GET /api/allocations/{allocation_id} */
+export function getAllocation(allocationId: string, signal?: AbortSignal): Promise<AllocationOut> {
+  return portforgeFetch<AllocationOut>(`/api/allocations/${allocationId}`, { signal });
+}
+
+/** DELETE /api/allocations/{allocation_id} -- uses the real allocation
+ * release contract (Phase 8A), not individual reservation deletion. */
+export function releaseAllocation(allocationId: string, signal?: AbortSignal): Promise<AllocationOut> {
+  return portforgeFetch<AllocationOut>(`/api/allocations/${allocationId}`, { method: "DELETE", signal });
 }
 
 /** GET /api/conflicts */

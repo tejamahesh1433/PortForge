@@ -2,6 +2,7 @@ import {
   AlertTriangle,
   Folder,
   Gauge,
+  Layers,
   Lightbulb,
   Lock,
   Network,
@@ -34,6 +35,7 @@ export const NAV_MAIN_ITEMS: NavItem[] = [
   { href: "/ports", label: "Ports", icon: Network, description: "Every known binding" },
   { href: "/projects", label: "Projects", icon: Folder, description: "Grouped by project" },
   { href: "/reservations", label: "Reservations", icon: Lock, description: "Claimed ports" },
+  { href: "/allocations", label: "Allocations", icon: Layers, description: "Atomic port bundles" },
   { href: "/conflicts", label: "Conflicts", icon: AlertTriangle, description: "Ownership mismatches" },
   {
     href: "/recommendations",
@@ -48,8 +50,8 @@ export const NAV_MAIN_ITEMS: NavItem[] = [
 export const NAV_GROUPS: NavGroup[] = [
   { items: NAV_MAIN_ITEMS.slice(0, 1) },
   { label: "Infrastructure", items: NAV_MAIN_ITEMS.slice(1, 4) },
-  { label: "Operations", items: NAV_MAIN_ITEMS.slice(4, 7) },
-  { label: "Observability", items: NAV_MAIN_ITEMS.slice(7, 9) },
+  { label: "Operations", items: NAV_MAIN_ITEMS.slice(4, 8) },
+  { label: "Observability", items: NAV_MAIN_ITEMS.slice(8, 10) },
 ];
 
 export const NAV_FOOTER_ITEMS: NavItem[] = [

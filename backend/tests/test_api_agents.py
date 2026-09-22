@@ -321,9 +321,13 @@ def test_heartbeat_with_mismatched_protocol_version_warns_but_still_succeeds(cli
     assert response.json()["status"]  # host record was updated normally
 
 
-def test_protocol_version_not_persisted_on_host(client, db_session):
-    """No DB migration in v1.1-A -- protocol_version must never land on
-    the Host row itself, only in the transient response.
+def test_protocol_version_now_persisted_on_host_for_v11d_compatibility_display(client, db_session):
+    """v1.1-A deliberately did NOT persist this (see
+    compatibility_service.py's docstring) -- v1.1-D reverses that specific
+    choice (user-approved, see docs/v1.1/v1.1-d-data-audit.md) because
+    Host Compatibility display has no way to survive between requests
+    without it. Only the raw integer is stored; `protocol_compatibility`
+    itself is still always recomputed live from it, never a stored verdict.
     """
     from app.models.host import Host
     from app.services.compatibility_service import PROTOCOL_VERSION
@@ -344,4 +348,4 @@ def test_protocol_version_not_persisted_on_host(client, db_session):
     import uuid as _uuid
 
     host = db_session.get(Host, _uuid.UUID(host_id))
-    assert not hasattr(host, "protocol_version")
+    assert host.protocol_version == PROTOCOL_VERSION

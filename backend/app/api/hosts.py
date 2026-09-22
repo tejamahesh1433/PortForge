@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..repositories.host_repository import HostRepository
 from ..repositories.port_repository import PortRepository
+from ..repositories.probe_repository import ProbeRepository
 from ..schemas.common import Page
 from ..schemas.port import PortObservationOut
 from datetime import datetime, timezone
@@ -15,6 +16,7 @@ from ..config import get_settings
 from ..models.host import Host
 from ..schemas.health_status import derive_health_state
 from ..schemas.host import HostOut, HostDiagnosticsOut
+from ..services import compatibility_service
 
 router = APIRouter(prefix="/hosts", tags=["hosts"])
 
@@ -47,7 +49,9 @@ def _build_host_out(host: Host) -> HostOut:
         health_state=health_state.value,
         health_reason=reason.value,
         age_seconds=age_seconds,
-        snapshot_age_seconds=snapshot_age
+        snapshot_age_seconds=snapshot_age,
+        protocol_version=host.protocol_version,
+        protocol_compatibility=compatibility_service.evaluate_protocol_compatibility(host.protocol_version),
     )
 
 @router.get("", response_model=Page[HostOut])
@@ -78,12 +82,25 @@ def get_host_diagnostics(host_id: uuid.UUID, db: Session = Depends(get_db)) -> H
     if host is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Host not found.")
     settings = get_settings()
-    
+    host_out = _build_host_out(host)
+
+    # v1.1-D task Sec8: only computed here (a single-host read), never in
+    # list_hosts -- one bounded EXISTS query per detail view, not one per
+    # row of a 500-host list (see ProbeRepository.host_has_probe_history's
+    # own docstring).
+    if host_out.health_state != "HEALTHY":
+        probe_capability = "unavailable_offline"
+    elif ProbeRepository(db).host_has_probe_history(host_id):
+        probe_capability = "supported"
+    else:
+        probe_capability = "unknown"
+
     return HostDiagnosticsOut(
-        host=_build_host_out(host),
+        host=host_out,
         last_scan_observed_at=host.last_scan_observed_at,
         stale_threshold_seconds=settings.host_stale_after_seconds,
         offline_threshold_seconds=settings.host_offline_after_seconds,
+        probe_capability=probe_capability,
     )
 
 

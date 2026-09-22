@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useMemo, useState } from "react";
-import { AlertTriangle, Box, Container, Lightbulb, Lock, Network, Server, Trash2 } from "lucide-react";
+import { AlertTriangle, Box, Container, Layers, Lightbulb, Lock, Network, Server, Trash2 } from "lucide-react";
 import { MetricCard } from "@/components/data/metric-card";
 import { PortTable } from "@/components/data/port-table";
 import { EmptyState } from "@/components/feedback/empty-state";
@@ -12,17 +12,60 @@ import { LoadingState } from "@/components/feedback/loading-state";
 import { PageHeader } from "@/components/layout/page-header";
 import { ReservationModal } from "@/components/forms/reservation-modal";
 import { StatusBadge } from "@/components/status/status-badge";
+import { BindProbeBadge } from "@/components/status/bind-probe-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useProject } from "@/hooks/use-projects";
 import { useDeleteDashboardReservation } from "@/hooks/use-reservations";
+import { useAllocations } from "@/hooks/use-allocations";
 import { useRecommendation } from "@/hooks/use-recommendation";
-import { formatRelativeTime } from "@/lib/utils/format";
+import { formatAbsoluteTime, formatRelativeTime } from "@/lib/utils/format";
 import type { ActivityEventOut, PortObservationOut } from "@/lib/types/api";
 
-const TABS = ["overview", "ports", "processes", "docker", "reservations", "conflicts", "activity", "recommend"] as const;
+const TABS = ["overview", "ports", "processes", "docker", "reservations", "allocations", "conflicts", "activity", "recommend"] as const;
+
+function ProjectAllocationsTab({ projectName }: { projectName: string }) {
+  const allocations = useAllocations({ project: projectName, limit: 50 });
+
+  if (allocations.isPending) return <LoadingState variant="table" rows={4} />;
+  if (allocations.isError) return <ErrorState error={allocations.error} onRetry={() => void allocations.refetch()} />;
+  const items = allocations.data?.items ?? [];
+  if (items.length === 0) {
+    return (
+      <EmptyState
+        icon={Layers}
+        title="No allocations"
+        description="No coding agent or workflow has allocated a port bundle for this project yet."
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      {items.map((allocation) => (
+        <Link key={allocation.allocation_id} href={`/allocations/${allocation.allocation_id}`}>
+          <Card className="border-border bg-card transition-colors hover:border-primary/40">
+            <CardContent className="flex flex-wrap items-center justify-between gap-3 py-3">
+              <div>
+                <p className="text-sm font-medium text-foreground">
+                  {allocation.allocations.length} binding{allocation.allocations.length === 1 ? "" : "s"} on{" "}
+                  {allocation.host.hostname}
+                </p>
+                <p className="text-xs text-muted-foreground">{formatAbsoluteTime(allocation.created_at)}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <BindProbeBadge value={allocation.validation.bind_probe} />
+                <StatusBadge value={allocation.status} />
+              </div>
+            </CardContent>
+          </Card>
+        </Link>
+      ))}
+    </div>
+  );
+}
 
 function ActivityRows({ events }: { events: ActivityEventOut[] }) {
   if (!events.length) return <EmptyState title="No project activity" description="No reliably project-linked events have been recorded yet." />;
@@ -92,7 +135,7 @@ export default function ProjectDetailPage() {
         <MetricCard label="Conflicts" value={data.conflict_count} icon={AlertTriangle} accent={data.conflict_count ? "red" : "emerald"} />
       </div>
       <Tabs value={tab} onValueChange={setTab}>
-        <TabsList className="flex h-auto flex-wrap">
+        <TabsList className="flex h-auto w-full justify-start overflow-x-auto">
           {TABS.map((item) => <TabsTrigger key={item} value={item} className="capitalize">{item}</TabsTrigger>)}
         </TabsList>
         <TabsContent value="overview" className="space-y-4 pt-4">
@@ -108,6 +151,9 @@ export default function ProjectDetailPage() {
         <TabsContent value="reservations" className="space-y-4 pt-4">
           <div className="flex justify-end"><ReservationModal defaultProject={data.project_name} trigger={<Button size="sm"><Lock className="size-4" /> Reserve for project</Button>} /></div>
           {data.reservations.items.length ? <div className="space-y-2">{data.reservations.items.map((reservation) => <Card key={reservation.id} className="border-border bg-card"><CardContent className="flex items-center justify-between gap-4 py-3"><div><p className="font-mono text-sm">{reservation.port}/{reservation.protocol}</p><p className="text-xs text-muted-foreground">{data.host_details.find((host) => host.host_id === reservation.host_id)?.hostname ?? reservation.host_id} · {reservation.service ?? reservation.purpose ?? "Project reservation"}</p></div><Button variant="ghost" size="icon-sm" aria-label="Release reservation" onClick={() => deleteReservation.mutate({ hostId: reservation.host_id, reservationId: reservation.id })}><Trash2 className="size-4" /></Button></CardContent></Card>)}</div> : <EmptyState title="No reservations" description="This project has no current Central reservations." />}
+        </TabsContent>
+        <TabsContent value="allocations" className="pt-4">
+          <ProjectAllocationsTab projectName={data.project_name} />
         </TabsContent>
         <TabsContent value="conflicts" className="pt-4">{data.conflicts.length ? <div className="space-y-2">{data.conflicts.map((conflict) => <Card key={`${conflict.host_id}-${conflict.port}`}><CardContent className="py-3"><p className="text-sm font-medium">{conflict.hostname} · {conflict.port}/{conflict.protocol}</p><p className="text-xs text-muted-foreground">{conflict.reason}</p></CardContent></Card>)}</div> : <EmptyState title="No project conflicts" description="Same numeric ports on different hosts remain independent and valid." />}</TabsContent>
         <TabsContent value="activity" className="pt-4"><ActivityRows events={data.activity} /></TabsContent>

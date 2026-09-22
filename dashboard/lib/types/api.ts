@@ -16,6 +16,7 @@
  *   - backend/app/schemas/reservation.py -> ReservationOut
  *   - backend/app/schemas/conflict.py -> ConflictOut
  *   - backend/app/schemas/recommendation.py -> CentralRecommendationOut
+ *   - backend/app/schemas/allocation.py -> AllocationOut, AllocationEntryOut
  */
 
 /** backend/app/schemas/common.py:Page */
@@ -63,6 +64,13 @@ export interface HostOut {
   health_reason?: string;
   age_seconds?: number;
   snapshot_age_seconds?: number | null;
+
+  // v1.1-D: raw last-reported protocol_version (null = legacy agent that
+  // never sent one, or never yet contacted Central since v1.1-A shipped).
+  // protocol_compatibility is always recomputed live server-side from it --
+  // never treat it as a permanent verdict.
+  protocol_version?: number | null;
+  protocol_compatibility?: "compatible" | "warning" | "unknown";
 }
 
 export interface HostDiagnosticsOut {
@@ -70,6 +78,9 @@ export interface HostDiagnosticsOut {
   last_scan_observed_at: string | null;
   stale_threshold_seconds: number;
   offline_threshold_seconds: number;
+  /** v1.1-D: "unknown" covers both "never asked" and "legacy agent" --
+   * Central cannot honestly distinguish the two from data alone. */
+  probe_capability?: "supported" | "unknown" | "unavailable_offline";
 }
 
 export interface GlobalDiagnosticsOut {
@@ -225,6 +236,75 @@ export interface CentralRecommendationOut {
   basis: string;
   candidates_considered: number;
   known_conflicts_excluded: number[];
+}
+
+/** backend/app/schemas/allocation.py:AllocationHostOut */
+export interface AllocationHostOut {
+  id: string;
+  hostname: string;
+}
+
+/**
+ * backend/app/schemas/allocation.py:AllocationEntryOut
+ *
+ * `bind_probe` is computed LIVE at read time from v1.1-B evidence, never a
+ * stored creation-time snapshot -- see docs/v1.1/v1.1-d-data-audit.md.
+ * Same 5-value contract as AllocationValidationOut.bind_probe below.
+ */
+export interface AllocationEntryOut {
+  name: string;
+  purpose: string;
+  protocol: string;
+  port: number;
+  reservation_id: string;
+  bind_address: string | null;
+  bind_probe: BindProbeEvidence;
+}
+
+/**
+ * backend/app/services/probe_service.py's 5-value bind_probe contract.
+ * CRITICAL (v1.1-D task Sec5/Sec32): "verified_free" means PortForge
+ * verified this binding was free ON THE TARGET HOST AT PROBE TIME. It is
+ * NEVER a guarantee the port is currently free -- an unmanaged process on
+ * that host can still bind it after the probe ran. Never present it as a
+ * permanent guarantee anywhere in the UI.
+ */
+export type BindProbeEvidence =
+  | "not_remote_capable"
+  | "verified_free"
+  | "verified_occupied"
+  | "unavailable"
+  | "expired";
+
+/** backend/app/schemas/allocation.py:AllocationValidationOut */
+export interface AllocationValidationOut {
+  snapshot_age_seconds: number;
+  host_health_state: string;
+  bind_probe: BindProbeEvidence;
+}
+
+/** backend/app/schemas/allocation.py:AllocationOut */
+export interface AllocationOut {
+  idempotent_replay: boolean;
+  allocation_id: string;
+  project: string;
+  host: AllocationHostOut;
+  status: "active" | "released";
+  allocations: AllocationEntryOut[];
+  validation: AllocationValidationOut;
+  created_at: string;
+  released_at: string | null;
+  request_id: string | null;
+}
+
+/** Query params accepted by GET /api/allocations (backend/app/api/allocations.py) */
+export interface ListAllocationsParams {
+  host_id?: string;
+  project?: string;
+  status?: "active" | "released";
+  search?: string;
+  limit?: number;
+  offset?: number;
 }
 
 /** Query params accepted by GET /api/hosts (backend/app/api/hosts.py) */
