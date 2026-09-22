@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     # --- API ------------------------------------------------------------
     api_host_port: int = 58000  # PORTFORGE_API_HOST_PORT
     environment: str = "development"
-    version: str = "1.1.2"
+    version: str = "1.1.3"
 
     # --- Security ---------------------------------------------------------
     # Required to mint enrollment tokens (see security/tokens.py). Deliberately

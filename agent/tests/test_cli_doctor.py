@@ -15,7 +15,7 @@ def _mock_client(healthy=True):
     if healthy:
         instance.health.return_value = MagicMock(
             success=True,
-            data={"status": "ok", "service": "portforge", "database": "connected", "version": "1.1.2", "protocol_version": 1},
+            data={"status": "ok", "service": "portforge", "database": "connected", "version": "1.1.3", "protocol_version": 1},
         )
     else:
         instance.health.return_value = MagicMock(success=False, error="connection refused")
