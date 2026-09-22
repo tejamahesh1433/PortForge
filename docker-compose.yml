@@ -68,7 +68,8 @@ services:
     restart: unless-stopped
     environment:
       # This tells the dashboard where to find the API from the browser
-      - NEXT_PUBLIC_PORTFORGE_API_URL=http://127.0.0.1:${PORTFORGE_API_HOST_PORT:-58000}
+      - NEXT_PUBLIC_PORTFORGE_API_URL=http://localhost:${PORTFORGE_API_HOST_PORT:-58000}
+      - PORTFORGE_INTERNAL_API_URL=http://portforge-api:8000
     ports:
       - "${PORTFORGE_DASHBOARD_HOST_PORT:-3000}:3000"
     depends_on:

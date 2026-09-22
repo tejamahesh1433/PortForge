@@ -7,4 +7,6 @@
  * build.
  */
 export const PORTFORGE_API_URL: string =
-  process.env.NEXT_PUBLIC_PORTFORGE_API_URL ?? "http://127.0.0.1:58000";
+  typeof window === "undefined" && process.env.PORTFORGE_INTERNAL_API_URL
+    ? process.env.PORTFORGE_INTERNAL_API_URL
+    : (process.env.NEXT_PUBLIC_PORTFORGE_API_URL ?? "http://localhost:58000");

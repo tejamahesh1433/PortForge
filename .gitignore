@@ -13,3 +13,13 @@ runtime_state.json
 reservations.json
 reservations.yml
 scratch/
+venv_agent/
+.next/
+node_modules/
+*.egg-info/
+build/
+dist/
+.vscode/
+.idea/
+.env.*
+!.env.example
