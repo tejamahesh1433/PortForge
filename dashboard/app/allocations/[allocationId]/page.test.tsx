@@ -4,11 +4,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import AllocationDetailPage from "./page";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
-const { mutate, toastAdd, mockUseAllocation, mockUseReleaseAllocation } = vi.hoisted(() => ({
+const { mutate, toastAdd, mockUseAllocation, mockUseReleaseAllocation, mockUseVerifyAllocation } = vi.hoisted(() => ({
   mutate: vi.fn((_vars: unknown, opts?: { onSuccess?: () => void }) => opts?.onSuccess?.()),
   toastAdd: vi.fn(),
   mockUseAllocation: vi.fn(),
   mockUseReleaseAllocation: vi.fn(),
+  mockUseVerifyAllocation: vi.fn(),
 }));
 
 vi.mock("next/navigation", () => ({
@@ -22,6 +23,7 @@ vi.mock("@/components/ui/toast", () => ({
 vi.mock("@/hooks/use-allocations", () => ({
   useAllocation: (...args: unknown[]) => mockUseAllocation(...args),
   useReleaseAllocation: (...args: unknown[]) => mockUseReleaseAllocation(...args),
+  useVerifyAllocation: (...args: unknown[]) => mockUseVerifyAllocation(...args),
 }));
 
 function mockAllocation(overrides: Partial<Record<string, unknown>> = {}) {
@@ -61,6 +63,7 @@ beforeEach(() => {
   mutate.mockClear();
   toastAdd.mockClear();
   mockUseReleaseAllocation.mockReturnValue({ mutate, isPending: false });
+  mockUseVerifyAllocation.mockReturnValue({ mutate, isPending: false });
 });
 
 describe("AllocationDetailPage", () => {
@@ -99,6 +102,13 @@ describe("AllocationDetailPage", () => {
     renderDetail();
     expect(screen.getByText(/Workflow and config-mutation state is local to the project host/)).toBeInTheDocument();
     expect(screen.getByText(/portforge workflow status --request-id/)).toBeInTheDocument();
+  });
+
+  it("can explicitly refresh verification without releasing", async () => {
+    mockUseAllocation.mockReturnValue({ isPending: false, isError: false, data: mockAllocation(), refetch: vi.fn() });
+    renderDetail();
+    await userEvent.click(screen.getByRole("button", { name: "Verify allocation" }));
+    expect(mutate).toHaveBeenCalledWith("alloc-1", expect.objectContaining({ onSuccess: expect.any(Function) }));
   });
 
   it("release requires confirmation and shows a success toast", async () => {

@@ -19,6 +19,7 @@ import type {
   ProjectDetailOut,
   ReservationOut,
   DashboardReservationIn,
+  AllocationIn,
 } from "@/lib/types/api";
 
 /** GET /api/health */
@@ -107,12 +108,22 @@ export function deleteDashboardReservation(
   });
 }
 
+/** POST /api/allocations */
+export function createAllocation(payload: AllocationIn, signal?: AbortSignal): Promise<AllocationOut> {
+  return portforgeFetch<AllocationOut>("/api/allocations", { method: "POST", body: payload, signal });
+}
+
 /** GET /api/allocations */
 export function listAllocations(
   params: ListAllocationsParams = {},
   signal?: AbortSignal,
 ): Promise<Page<AllocationOut>> {
   return portforgeFetch<Page<AllocationOut>>("/api/allocations", { params, signal });
+}
+
+/** POST /api/allocations/{allocation_id}/verify */
+export function verifyAllocation(allocationId: string, signal?: AbortSignal): Promise<AllocationOut> {
+  return portforgeFetch<AllocationOut>("/api/allocations/" + allocationId + "/verify", { method: "POST", signal });
 }
 
 /** GET /api/allocations/{allocation_id} */

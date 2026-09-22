@@ -1,9 +1,9 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { getAllocation, listAllocations, releaseAllocation } from "@/lib/api/resources";
+import { createAllocation, getAllocation, listAllocations, releaseAllocation, verifyAllocation } from "@/lib/api/resources";
 import { STALE_TIME_MS } from "@/lib/query-config";
-import type { ListAllocationsParams } from "@/lib/types/api";
+import type { AllocationIn, ListAllocationsParams } from "@/lib/types/api";
 import { queryKeys } from "./query-keys";
 
 /** GET /api/allocations */
@@ -12,6 +12,34 @@ export function useAllocations(params: ListAllocationsParams = {}) {
     queryKey: queryKeys.allocations.list(params),
     queryFn: ({ signal }) => listAllocations(params, signal),
     staleTime: STALE_TIME_MS,
+  });
+}
+
+
+/** POST /api/allocations */
+export function useCreateAllocation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: AllocationIn) => createAllocation(payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["allocations"] });
+      queryClient.invalidateQueries({ queryKey: ["reservations"] });
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      queryClient.invalidateQueries({ queryKey: ["activity"] });
+    },
+  });
+}
+
+/** POST /api/allocations/{allocation_id}/verify */
+export function useVerifyAllocation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (allocationId: string) => verifyAllocation(allocationId),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["allocations"] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.allocations.detail(data.allocation_id) });
+      queryClient.invalidateQueries({ queryKey: ["activity"] });
+    },
   });
 }
 

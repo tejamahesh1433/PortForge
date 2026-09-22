@@ -257,6 +257,7 @@ export interface AllocationEntryOut {
   protocol: string;
   port: number;
   reservation_id: string;
+  requested_range?: string | null;
   bind_address: string | null;
   bind_probe: BindProbeEvidence;
 }
@@ -275,6 +276,21 @@ export type BindProbeEvidence =
   | "verified_occupied"
   | "unavailable"
   | "expired";
+
+export interface AllocationRequestItemIn {
+  name: string;
+  purpose: string;
+  protocol?: "tcp" | "udp";
+  preferred_port?: number;
+  requested_range?: string;
+}
+
+export interface AllocationIn {
+  project: string;
+  host_id: string;
+  requests: AllocationRequestItemIn[];
+  request_id?: string;
+}
 
 /** backend/app/schemas/allocation.py:AllocationValidationOut */
 export interface AllocationValidationOut {

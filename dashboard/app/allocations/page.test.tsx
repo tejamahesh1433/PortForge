@@ -51,6 +51,7 @@ vi.mock("@/hooks/use-allocations", () => ({
     refetch: vi.fn(),
   }),
   useReleaseAllocation: () => ({ mutate, isPending: false }),
+  useCreateAllocation: () => ({ mutate, isPending: false }),
 }));
 
 vi.mock("@/components/ui/toast", () => ({
@@ -103,6 +104,7 @@ describe("AllocationsPage empty state", () => {
     vi.doMock("@/hooks/use-allocations", () => ({
       useAllocations: () => ({ isPending: false, isError: false, data: { items: [], total: 0, limit: 50, offset: 0 }, refetch: vi.fn() }),
       useReleaseAllocation: () => ({ mutate: vi.fn(), isPending: false }),
+      useCreateAllocation: () => ({ mutate: vi.fn(), isPending: false }),
     }));
     const { default: FreshAllocationsPage } = await import("./page");
     render(
@@ -126,6 +128,7 @@ describe("AllocationsPage error state", () => {
         refetch: vi.fn(),
       }),
       useReleaseAllocation: () => ({ mutate: vi.fn(), isPending: false }),
+      useCreateAllocation: () => ({ mutate: vi.fn(), isPending: false }),
     }));
     const { default: FreshAllocationsPage } = await import("./page");
     render(
@@ -144,6 +147,7 @@ describe("AllocationsPage loading state", () => {
     vi.doMock("@/hooks/use-allocations", () => ({
       useAllocations: () => ({ isPending: true, isError: false, data: undefined, refetch: vi.fn() }),
       useReleaseAllocation: () => ({ mutate: vi.fn(), isPending: false }),
+      useCreateAllocation: () => ({ mutate: vi.fn(), isPending: false }),
     }));
     const { default: FreshAllocationsPage } = await import("./page");
     const { container } = render(

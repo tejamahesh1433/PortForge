@@ -24,6 +24,7 @@ import { useAllocations, useReleaseAllocation } from "@/hooks/use-allocations";
 import { formatAbsoluteTime } from "@/lib/utils/format";
 import type { AllocationOut, BindProbeEvidence } from "@/lib/types/api";
 import { toast } from "@/components/ui/toast";
+import { CreateAllocationDialog } from "@/components/allocations/create-allocation-dialog";
 
 const PAGE_SIZE = 50;
 
@@ -231,6 +232,7 @@ function AllocationsPageContent() {
       <PageHeader
         title="Allocations"
         description="Atomic, multi-port bundles requested by coding agents and workflows (Phase 8A)."
+        actions={<CreateAllocationDialog hosts={hosts.data?.items ?? []} onCreated={() => void allocations.refetch()} />}
       />
 
       <FilterBar>

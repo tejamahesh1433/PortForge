@@ -13,7 +13,7 @@ import { StatusBadge } from "@/components/status/status-badge";
 import { BindProbeBadge, getBindProbeMeta } from "@/components/status/bind-probe-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { useAllocation, useReleaseAllocation } from "@/hooks/use-allocations";
+import { useAllocation, useReleaseAllocation, useVerifyAllocation } from "@/hooks/use-allocations";
 import { formatAbsoluteTime } from "@/lib/utils/format";
 import { toast } from "@/components/ui/toast";
 
@@ -30,12 +30,20 @@ export default function AllocationDetailPage() {
   const params = useParams<{ allocationId: string }>();
   const allocation = useAllocation(params.allocationId);
   const releaseMutation = useReleaseAllocation();
+  const verifyMutation = useVerifyAllocation();
   const [confirmOpen, setConfirmOpen] = useState(false);
 
   if (allocation.isPending) return <LoadingState variant="block" />;
   if (allocation.isError) return <ErrorState error={allocation.error} onRetry={() => void allocation.refetch()} />;
 
   const data = allocation.data!;
+
+  const verify = () => {
+    verifyMutation.mutate(data.allocation_id, {
+      onSuccess: () => toast.add({ type: "success", title: "Allocation verified", description: "Verification refreshed from the target host." }),
+      onError: (error) => toast.add({ type: "error", title: "Verification failed", description: error instanceof Error ? error.message : "Central could not verify this allocation." }),
+    });
+  };
 
   const confirmRelease = () => {
     releaseMutation.mutate(data.allocation_id, {
@@ -71,8 +79,11 @@ export default function AllocationDetailPage() {
       />
 
       {data.status === "active" && (
-        <div className="flex justify-end">
-          <Button variant="destructive" size="sm" onClick={() => setConfirmOpen(true)}>
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button variant="outline" size="sm" onClick={verify} disabled={verifyMutation.isPending}>
+            {verifyMutation.isPending ? "Verifying&" : "Verify allocation"}
+          </Button>
+          <Button variant="destructive" size="sm" onClick={() => setConfirmOpen(true)} disabled={verifyMutation.isPending}>
             <Trash2 className="size-4" /> Release allocation
           </Button>
         </div>
@@ -108,6 +119,9 @@ export default function AllocationDetailPage() {
             <DetailRow label="Snapshot age" value={`${data.validation.snapshot_age_seconds}s`} />
             <DetailRow label="Bundle probe evidence" value={<BindProbeBadge value={data.validation.bind_probe} />} />
             <p className="mt-3 text-xs text-muted-foreground">
+              Verified free means the binding was free at the time of the last probe; it is not a future availability guarantee.
+            </p>
+            <p className="mt-2 text-xs text-muted-foreground">
               An allocation reserves this binding in PortForge&apos;s own state. It does not, by itself, prove any
               application is currently listening on it -- that is a separate, physically observed fact (see the
               host&apos;s Ports tab for what is actually bound right now).
