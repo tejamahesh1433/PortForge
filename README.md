@@ -68,3 +68,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed setup and testing instructio
 ## Current Status
 
 PortForge is currently actively maintained and production-ready for private fleet management.
+## License
+
+PortForge is licensed under the [Apache License 2.0](LICENSE).

@@ -5,6 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "portforge-backend"
 version = "1.1.1"
+license = { text = "Apache-2.0" }
 description = "PortForge central registry: FastAPI + PostgreSQL"
 requires-python = ">=3.11"
 dependencies = [
