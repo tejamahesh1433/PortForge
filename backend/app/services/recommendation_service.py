@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from ..repositories.port_repository import PortRepository
 from ..repositories.reservation_repository import ReservationRepository
 from ..schemas.recommendation import CentralRecommendationOut
+from . import probe_service
 
 # Mirrors agent/portforge_agent/config.py's DEFAULT_RANGES -- kept as a
 # small, independent copy rather than an import specifically because this
@@ -121,7 +122,17 @@ def suggest_port(
             known_conflicts_excluded=[],
         )
 
+    # v1.1-B: layer fresh remote probe evidence (if any) on top of the
+    # existing reservation/observation-based candidate search -- a
+    # candidate with a FRESH verified_occupied probe is skipped even
+    # though nothing in the reservation table knows about it. Shared,
+    # bounded logic (see probe_service.resolve_with_probe_awareness's own
+    # docstring for why this isn't duplicated per-caller).
     result = find_available_port(db, host_id, service_type, protocol)
+    result, bind_probe = probe_service.resolve_with_probe_awareness(
+        db, host_id, protocol, result, lambda exclude: find_available_port(db, host_id, service_type, protocol, exclude_ports=exclude)
+    )
+    verification = "locally_verified" if bind_probe == probe_service.VERIFIED_FREE else "central_suggestion"
 
     basis = (
         "Based on the most recently reported state and reservations on file for this host in the central "
@@ -129,12 +140,24 @@ def suggest_port(
         "reservation check, and a real socket bind probe before actually using this port "
         "(see `portforge check <port>` on that host)."
     )
+    if bind_probe == probe_service.VERIFIED_FREE:
+        basis = (
+            "A fresh, authoritative bind probe performed BY THE TARGET HOST'S OWN AGENT confirmed this port "
+            "was free. This is still a point-in-time observation, not a lock -- another process could still "
+            "bind it before you do (see `portforge check <port>` on that host)."
+        )
+
+    # suggest_port owns its own transaction boundary (api/recommendations.py's
+    # handler never commits) -- this persists any probe queued above.
+    # Harmless no-op when nothing was queued (the common case).
+    db.commit()
 
     return CentralRecommendationOut(
         service_type=service_type,
         protocol=protocol,
         recommended_port=result.port,
-        verification="central_suggestion",
+        verification=verification,
+        bind_probe=bind_probe,
         basis=basis,
         candidates_considered=result.candidates_considered,
         known_conflicts_excluded=result.excluded,

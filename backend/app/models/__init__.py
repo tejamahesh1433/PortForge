@@ -15,6 +15,7 @@ from .agent_credential import AgentCredential, EnrollmentToken
 from .allocation import Allocation
 from .base import Base
 from .host import Host
+from .host_probe import HostProbe
 from .port_observation import CurrentPortObservation, PortObservationEvent
 from .reservation import CentralReservation
 from .scan import Scan
@@ -31,4 +32,5 @@ __all__ = [
     "Scan",
     "ActivityEvent",
     "Allocation",
+    "HostProbe",
 ]

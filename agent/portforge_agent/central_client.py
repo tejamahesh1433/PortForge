@@ -160,6 +160,19 @@ class CentralClient:
     def sync_reservation(self, reservation: Dict[str, Any]) -> CentralResult:
         return self._request("POST", "/api/reservations", body=reservation)
 
+    # --- v1.1-B: remote bind-probe result submission --------------------------
+    # Authenticated (require_agent) -- see docs/v1.1/remote-probe-design.md.
+    # Pending probes themselves are delivered inside the existing heartbeat
+    # response (see `heartbeat()` above), not a separate poll call.
+
+    def submit_probe_result(
+        self, host_id: str, probe_id: str, available: Optional[bool], reason: Optional[str] = None
+    ) -> CentralResult:
+        body: Dict[str, Any] = {"host_id": host_id, "probe_id": probe_id, "available": available}
+        if reason is not None:
+            body["reason"] = reason
+        return self._request("POST", "/api/agent/probes/result", body=body)
+
     # --- Phase 8A: agent allocation ------------------------------------------
     # Unauthenticated by design -- see docs/phase8a_agent_allocation.md
     # "Error contract" and the audit's §9: coding-agent allocation has no

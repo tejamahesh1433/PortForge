@@ -110,6 +110,13 @@ def sync_now(config: CentralConfig) -> SyncOutcome:
     if not heartbeat.success:
         return SyncOutcome(health=health, heartbeat=heartbeat, error="Heartbeat failed.")
 
+    # v1.1-B: answer any remote bind-probe requests Central delivered on
+    # this same heartbeat -- never allowed to fail the sync as a whole
+    # (process_pending_probes never raises; see remote_probe.py).
+    from .remote_probe import process_pending_probes
+
+    process_pending_probes(client, heartbeat.data)
+
     ports = discover_all_ports()
     scan_id = str(uuid.uuid4())
     observations_result = client.submit_observations(

@@ -24,8 +24,9 @@ from ..schemas.agent import (
     SnapshotResult,
     SnapshotSubmission,
 )
+from ..schemas.probe import PendingProbeOut, ProbeResultIn, ProbeResultOut
 from ..security.auth import AuthenticatedAgent, require_admin, require_agent
-from ..services import compatibility_service, enrollment_service, host_service, ingestion_service
+from ..services import compatibility_service, enrollment_service, host_service, ingestion_service, probe_service
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 
@@ -94,9 +95,51 @@ def heartbeat(
         timestamp=payload.timestamp,
     )
     compatibility = compatibility_service.evaluate_protocol_compatibility(payload.protocol_version)
+
+    # v1.1-B: deliver any pending remote bind-probe requests on this same
+    # heartbeat round-trip -- no second transport, no extra round trip. A
+    # legacy agent that doesn't read this field simply never claims them;
+    # they expire on their own TTL (see docs/v1.1/remote-probe-design.md).
+    delivered = probe_service.claim_pending_probes(db, agent.host_id)
+    pending_probes = [
+        PendingProbeOut(probe_id=p.id, port=p.port, protocol=p.protocol, bind_address=p.bind_address)
+        for p in delivered
+    ]
+
     return HeartbeatResponse(
-        host_id=host.id, last_seen=host.last_seen, status=host.status, protocol_compatibility=compatibility
+        host_id=host.id,
+        last_seen=host.last_seen,
+        status=host.status,
+        protocol_compatibility=compatibility,
+        pending_probes=pending_probes,
     )
+
+
+@router.post("/probes/result", response_model=ProbeResultOut)
+def submit_probe_result(
+    payload: ProbeResultIn,
+    agent: AuthenticatedAgent = Depends(require_agent),
+    db: Session = Depends(get_db),
+) -> ProbeResultOut:
+    """The only new agent-facing endpoint this increment adds (task §26:
+    "keep public API additions minimal"). `host_id` in the body is
+    cross-checked against the authenticated credential exactly like every
+    other agent endpoint -- the REAL authority for "which host is this"
+    is the bearer token, never the body (task §8).
+    """
+    if payload.host_id != agent.host_id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "host_id does not match the authenticated agent credential.")
+
+    try:
+        probe = probe_service.submit_result(
+            db, agent.host_id, payload.probe_id, payload.available, payload.reason
+        )
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except probe_service.ProbeOwnershipError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+
+    return ProbeResultOut(probe_id=probe.id, status=probe.status)
 
 
 @router.post("/observations", response_model=SnapshotResult)

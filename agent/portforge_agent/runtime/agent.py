@@ -82,6 +82,17 @@ class AgentRuntime:
                     self.state.last_heartbeat = last_heartbeat_time
                     save_state(self.state)
                     self.backoff.reset()
+
+                    # v1.1-B: answer any remote bind-probe requests
+                    # delivered on this same heartbeat. Never raises (see
+                    # remote_probe.py) -- a probe failure must never break
+                    # the always-on daemon's main loop.
+                    from ..remote_probe import process_pending_probes
+
+                    try:
+                        process_pending_probes(self.client, res.data)
+                    except Exception:
+                        logger.warning("Unexpected error processing pending probes", exc_info=True)
                 else:
                     logger.warning(f"Heartbeat failed: {res.error}")
                     self.backoff.next_delay()

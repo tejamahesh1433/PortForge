@@ -265,3 +265,24 @@ def test_report_never_contains_admin_bootstrap_token_or_db_password(tmp_path):
     dumped = str(report.to_dict()).lower()
     for forbidden in ("bootstrap", "db_password", "database_url", "ssh"):
         assert forbidden not in dumped
+
+
+# --- v1.1-B: doctor must never create a remote bind-probe (task §25) -------
+
+
+def test_doctor_never_calls_recommendation_or_allocation_endpoints(tmp_path):
+    """Only `get_recommendation`/`create_allocation` (server-side) can ever
+    create a HostProbe row -- doctor must never call either, directly or
+    indirectly, on the CentralClient it's given.
+    """
+    client = _healthy_client()
+    with patch("portforge_agent.doctor.load_central_config", return_value=MagicMock(enabled=False)), \
+         patch("portforge_agent.doctor.load_credential", return_value=None), \
+         patch("portforge_agent.doctor.service_ops.status", return_value=MagicMock(success=True, message="running")), \
+         patch("portforge_agent.doctor.is_docker_available", return_value=True), \
+         patch("portforge_agent.doctor.discover_all_ports", return_value=[]):
+        doctor.run_doctor(client=client, start_dir=str(tmp_path))
+
+    client.get_recommendation.assert_not_called()
+    client.create_allocation.assert_not_called()
+    assert not hasattr(client, "submit_probe_result") or not client.submit_probe_result.called

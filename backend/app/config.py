@@ -68,6 +68,20 @@ class Settings(BaseSettings):
     host_stale_after_seconds: int = 120
     host_offline_after_seconds: int = 300
 
+    # --- Remote bind probe (v1.1-B) ------------------------------------------
+    # See docs/v1.1/remote-probe-design.md. A probe result is only trusted as
+    # fresh evidence within this window after being queued -- past it, it's
+    # "expired" regardless of whether the agent ever answered (same honesty
+    # discipline as host_stale_after_seconds, applied to probe evidence
+    # instead of heartbeat recency).
+    remote_probe_ttl_seconds: int = 120
+    # Bounds "unbounded queue growth" (task §23): a host with this many
+    # non-terminal (PENDING/DELIVERED, unexpired) probes already queued gets
+    # no new ones queued on its behalf until some clear out.
+    max_pending_probes_per_host: int = 20
+    # Bounds how many probes one heartbeat call delivers at once (task §5).
+    max_probes_delivered_per_heartbeat: int = 5
+
     @model_validator(mode="after")
     def check_health_thresholds(self) -> "Settings":
         if self.host_stale_after_seconds >= self.host_offline_after_seconds:

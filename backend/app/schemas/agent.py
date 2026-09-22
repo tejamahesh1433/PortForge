@@ -17,6 +17,7 @@ from typing import List, Optional
 from pydantic import Field, field_validator
 
 from .common import ApiModel
+from .probe import PendingProbeOut
 
 _MAX_STR = 4096
 _MAX_SHORT_STR = 255
@@ -62,6 +63,10 @@ class HeartbeatResponse(ApiModel):
     last_seen: datetime
     status: str
     protocol_compatibility: str = "unknown"
+    # v1.1-B: additive. A legacy agent that doesn't look for this field
+    # simply never acts on it -- the probe(s) just expire unclaimed (see
+    # docs/v1.1/remote-probe-design.md "Offline/stale host interaction").
+    pending_probes: List[PendingProbeOut] = []
 
 
 class ObservationIn(ApiModel):

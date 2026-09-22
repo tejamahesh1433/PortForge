@@ -53,6 +53,7 @@ from ..schemas.allocation import (
     AllocationValidationOut,
 )
 from ..schemas.health_status import HostHealthState, derive_health_state
+from . import probe_service
 from .host_lock import acquire_host_lock
 from .recommendation_service import DEFAULT_RANGES, find_available_port
 from .reservation_service import _insert_reservation
@@ -100,7 +101,7 @@ def _hash_payload(project: str, host_id: uuid.UUID, requests: List[AllocationReq
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _build_validation(host, now: Optional[datetime] = None) -> AllocationValidationOut:
+def _build_validation(host, now: Optional[datetime] = None, bind_probe: str = "not_remote_capable") -> AllocationValidationOut:
     settings = get_settings()
     state, _reason, age_seconds = derive_health_state(
         host.last_seen, settings.host_stale_after_seconds, settings.host_offline_after_seconds, now=now
@@ -108,7 +109,7 @@ def _build_validation(host, now: Optional[datetime] = None) -> AllocationValidat
     return AllocationValidationOut(
         snapshot_age_seconds=age_seconds,
         host_health_state=state.value,
-        bind_probe="not_remote_capable",
+        bind_probe=bind_probe,
     )
 
 
@@ -137,7 +138,7 @@ def _ensure_host_allocatable(host) -> AllocationValidationOut:
     return validation
 
 
-def _build_allocation_out(db: Session, allocation: Allocation) -> AllocationOut:
+def _build_allocation_out(db: Session, allocation: Allocation, bind_probe: str = "not_remote_capable") -> AllocationOut:
     host_repo = HostRepository(db)
     host = host_repo.get(allocation.host_id)
     reservation_repo = ReservationRepository(db)
@@ -159,7 +160,7 @@ def _build_allocation_out(db: Session, allocation: Allocation) -> AllocationOut:
         host=AllocationHostOut(id=host.id, hostname=host.hostname),
         status=allocation.status,
         allocations=entries,
-        validation=_build_validation(host),
+        validation=_build_validation(host, bind_probe=bind_probe),
         created_at=allocation.created_at,
         released_at=allocation.released_at,
     )
@@ -189,6 +190,16 @@ def _port_is_free(db: Session, host_id: uuid.UUID, port: int, protocol: str, cla
     for reservation in rows:
         if reservation.port == port and reservation.protocol.value == protocol:
             return False
+    # v1.1-B: a fresh remote probe saying this EXACT binding is occupied
+    # is real evidence a plain reservation-table read can't have -- reject
+    # it even though nothing here has reserved it (task §11: "occupied
+    # remote candidate is rejected"). Only a genuinely occupied result
+    # rejects; missing/expired/unavailable evidence never does (task §9:
+    # "do not convert missing evidence into free" -- the inverse also
+    # holds: missing evidence must not manufacture an unavailable finding).
+    evidence = probe_service.get_probe_evidence(db, host_id, port, protocol)
+    if evidence.bind_probe == probe_service.VERIFIED_OCCUPIED:
+        return False
     return True
 
 
@@ -237,8 +248,15 @@ def create_allocation(db: Session, payload: AllocationIn) -> AllocationOut:
 
     claimed: set = set()
     resolved: List[tuple] = []  # (request_item, port)
+    # v1.1-B: the STRONGEST evidence seen across the whole bundle -- if
+    # even one port was genuinely confirmed by a fresh remote probe, the
+    # allocation's overall `validation.bind_probe` reports that (rather
+    # than trying to represent N ports' worth of individually-differing
+    # evidence in one field, which AllocationValidationOut's existing,
+    # unchanged shape doesn't have room for).
+    bundle_bind_probe = "not_remote_capable"
     for item in payload.requests:
-        port = _resolve_candidate(db, payload.host_id, item, claimed)
+        port, item_bind_probe = _resolve_candidate(db, payload.host_id, item, claimed)
         if port is None:
             db.rollback()
             raise AllocationError(
@@ -247,6 +265,8 @@ def create_allocation(db: Session, payload: AllocationIn) -> AllocationOut:
                 status_code=409,
                 details=[{"name": item.name, "purpose": item.purpose, "protocol": item.protocol}],
             )
+        if item_bind_probe == "verified_free":
+            bundle_bind_probe = "verified_free"
         resolved.append((item, port))
         claimed.add(port)
 
@@ -290,16 +310,42 @@ def create_allocation(db: Session, payload: AllocationIn) -> AllocationOut:
 
     db.commit()
     db.refresh(allocation)
-    return _build_allocation_out(db, allocation)
+    return _build_allocation_out(db, allocation, bind_probe=bundle_bind_probe)
 
 
 def _resolve_candidate(
     db: Session, host_id: uuid.UUID, item: AllocationRequestItem, claimed: set
-) -> Optional[int]:
+) -> "tuple[Optional[int], str]":
+    """Returns `(port, bind_probe)`. `bind_probe` reflects the strongest
+    evidence actually used to pick THIS port -- `verified_free` only when
+    a fresh remote probe genuinely confirmed it, `not_remote_capable`
+    otherwise (matches AllocationValidationOut's existing, unchanged
+    default meaning -- see docs/v1.1/remote-probe-design.md's "bind_probe
+    contract").
+    """
     if item.preferred_port is not None and _port_is_free(db, host_id, item.preferred_port, item.protocol, claimed):
-        return item.preferred_port
+        evidence = probe_service.get_probe_evidence(db, host_id, item.preferred_port, item.protocol)
+        if evidence.bind_probe == probe_service.VERIFIED_FREE:
+            return item.preferred_port, probe_service.VERIFIED_FREE
+        if evidence.bind_probe == probe_service.NOT_REMOTE_CAPABLE:
+            # No evidence yet for this specific preferred port -- queue one
+            # so a LATER allocation/recommendation call benefits, exactly
+            # like the non-preferred path already does via
+            # resolve_with_probe_awareness.
+            probe_service.queue_probe(db, host_id, item.preferred_port, item.protocol)
+        return item.preferred_port, probe_service.NOT_REMOTE_CAPABLE
+
     result = find_available_port(db, host_id, item.purpose, item.protocol, exclude_ports=frozenset(claimed))
-    return result.port
+    result, bind_probe = probe_service.resolve_with_probe_awareness(
+        db,
+        host_id,
+        item.protocol,
+        result,
+        lambda exclude: find_available_port(
+            db, host_id, item.purpose, item.protocol, exclude_ports=frozenset(claimed) | exclude
+        ),
+    )
+    return result.port, bind_probe
 
 
 def get_allocation(db: Session, allocation_id: uuid.UUID) -> AllocationOut:

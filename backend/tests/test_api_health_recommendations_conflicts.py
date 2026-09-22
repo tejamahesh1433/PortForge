@@ -63,3 +63,17 @@ def test_conflicts_empty_by_default(client):
     response = client.get("/api/conflicts")
     assert response.status_code == 200
     assert response.json() == []
+
+
+def test_health_check_never_creates_a_probe(client, db_session):
+    """v1.1-B task §25: `portforge doctor`'s central_connectivity check
+    hits /api/health -- this must never be a path that creates a
+    HostProbe row (only GET /api/recommendations and POST /api/allocations
+    can, per services/probe_service.py::queue_probe's two real callers).
+    """
+    from app.models.host_probe import HostProbe
+
+    for _ in range(3):
+        assert client.get("/api/health").status_code == 200
+
+    assert db_session.query(HostProbe).count() == 0
