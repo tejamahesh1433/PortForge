@@ -125,13 +125,13 @@ architecture, done before writing any allocation code, per the Phase 8A instruct
   only has `health`/`enroll`/`heartbeat`/`submit_observations`/`sync_reservation` — no
   "probe this port right now" call in either direction).
 - **This is the crux of Phase 8A §7/§8's instruction.** Central (this FastAPI process)
-  happens, today, to run on the same physical machine as the `NTMKEYA` agent — but
+  happens, today, to run on the same physical machine as the `workstation` agent — but
   nothing in the code encodes or could safely rely on that coincidence (Central could
   be moved to any machine; there is no `host_id == "the machine I'm running on"` check
   anywhere, and adding one would be fragile, unverifiable from inside a request
   handler, and easily wrong after an infrastructure change). **Decision: Central's
   allocation validation NEVER performs a real socket bind() for any host, including
-  NTMKEYA, uniformly.** The allocation response is honest about this via a
+  workstation, uniformly.** The allocation response is honest about this via a
   `validation` block (see §8 of this doc / the API doc) reporting
   `"bind_probe": "not_remote_capable"` and the snapshot age used, exactly like the
   Phase 8A instructions' own example. This matches `recommendation_service.py`'s

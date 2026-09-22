@@ -7,7 +7,7 @@
 ## Credential Rotation
 - **Mac SSH Credential:** ROTATED
 - **Lenovo SSH Credential:** ROTATED
-- **TejaServer SSH Credential:** ROTATED
+- **server-b SSH Credential:** ROTATED
 - **New Authentication Mechanism:** per-device SSH key authentication (ed25519).
 - **Fleet Identity & Enrollment:** Preserved. Agents continue to run and report `agent_identity: ok` without requiring enrollment changes. Heartbeat and sync function normally over the new SSH key mechanism where applicable.
 

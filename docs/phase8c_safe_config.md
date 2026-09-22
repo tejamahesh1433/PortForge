@@ -36,7 +36,7 @@ opt into independently.
 version: 1
 project: jarvis
 target:
-  host: NTMKEYA
+  host: workstation
 ports:
   frontend: {purpose: frontend, protocol: tcp}
   api: {purpose: api, protocol: tcp}

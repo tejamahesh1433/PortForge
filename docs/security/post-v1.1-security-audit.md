@@ -37,7 +37,7 @@
    - **Rotation Mechanism:** Rotate password using macOS System Preferences.
 2. **Windows -> Linux SSH (Lenovo)**: Linux user credentials.
    - **Rotation Mechanism:** Run `passwd` on the target machine.
-3. **Windows -> Linux SSH (HP/TejaServer)**: Linux user credentials.
+3. **Windows -> Linux SSH (HP/server-b)**: Linux user credentials.
    - **Rotation Mechanism:** Run `passwd` on the target machine.
 - **Validity:** The validity cannot be tested safely. All 3 must be rotated.
 

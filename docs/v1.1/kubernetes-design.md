@@ -30,7 +30,7 @@ cannot happen at the host-network level the rest of PortForge protects.
 
 For `hostPort`: the node a given pod lands on is decided by the scheduler
 at admission time in a real multi-node cluster — PortForge's whole model
-(`target: {host: NTMKEYA}`, "reserve this exact host") has no meaning
+(`target: {host: workstation}`, "reserve this exact host") has no meaning
 there, since PortForge can't know or control which node will actually run
 the pod. In a **local single-node cluster** (`kind`, Docker Desktop's
 built-in Kubernetes, `minikube` with the docker/none driver), there is
@@ -115,7 +115,7 @@ SCOPE here.
 
 ## Physical validation this would need before shipping
 
-A real `kind` cluster (or Docker Desktop Kubernetes) on NTMKEYA, a real
+A real `kind` cluster (or Docker Desktop Kubernetes) on workstation, a real
 Deployment+Service manifest, a real allocation, `config plan`/`apply`
 against it, and `kubectl apply --dry-run=client` (or a real `kubectl
 apply` into a throwaway `kind` cluster, then `kubectl delete`) confirming

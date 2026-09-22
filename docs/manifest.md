@@ -42,7 +42,7 @@ config:
 version: 1
 project: ecommerce-platform
 target:
-  host: NTMKEYA
+  host: workstation
 ports:
   frontend:
     purpose: http

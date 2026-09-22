@@ -24,7 +24,7 @@ Central should be installed on a single machine or server in your network. Agent
 
 **Using Docker Compose (Recommended)**
 ```bash
-git clone https://github.com/tejamahesh1433/PortForge.git
+git clone https://github.com/user/PortForge.git
 cd PortForge
 export PORTFORGE_ADMIN_BOOTSTRAP_TOKEN="choose-a-real-secret-here"  # required -- compose refuses to start without it
 docker-compose up -d

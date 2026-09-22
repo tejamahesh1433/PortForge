@@ -27,7 +27,7 @@ services:
       POSTGRES_USER: ${PORTFORGE_DB_USER:-portforge}
       POSTGRES_PASSWORD: ${PORTFORGE_DB_PASSWORD:-portforge}
     ports:
-      - "${PORTFORGE_DB_HOST_PORT:-55432}:5432"
+      - "${PORTFORGE_DB_BIND:-127.0.0.1}:${PORTFORGE_DB_HOST_PORT:-55432}:5432"
     volumes:
       - portforge-postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -50,7 +50,7 @@ services:
       PORTFORGE_DB_PASSWORD: ${PORTFORGE_DB_PASSWORD:-portforge}
       PORTFORGE_ADMIN_BOOTSTRAP_TOKEN: ${PORTFORGE_ADMIN_BOOTSTRAP_TOKEN:?set PORTFORGE_ADMIN_BOOTSTRAP_TOKEN before starting}
     ports:
-      - "${PORTFORGE_API_HOST_PORT:-58000}:8000"
+      - "${PORTFORGE_API_BIND:-127.0.0.1}:${PORTFORGE_API_HOST_PORT:-58000}:8000"
     depends_on:
       portforge-postgres:
         condition: service_healthy
@@ -71,7 +71,7 @@ services:
       - NEXT_PUBLIC_PORTFORGE_API_URL=http://localhost:${PORTFORGE_API_HOST_PORT:-58000}
       - PORTFORGE_INTERNAL_API_URL=http://portforge-api:8000
     ports:
-      - "${PORTFORGE_DASHBOARD_HOST_PORT:-3000}:3000"
+      - "${PORTFORGE_DASHBOARD_BIND:-127.0.0.1}:${PORTFORGE_DASHBOARD_HOST_PORT:-3000}:3000"
     depends_on:
       portforge-api:
         condition: service_healthy

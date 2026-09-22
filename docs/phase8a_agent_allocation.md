@@ -149,7 +149,7 @@ Response `201`:
 {
   "allocation_id": "b286a2ce-a1d2-4895-b6ce-52dcd0cf0b22",
   "project": "jarvis",
-  "host": {"id": "f90db087-f7b4-4647-958c-e8e13051ddc3", "hostname": "NTMKEYA"},
+  "host": {"id": "f90db087-f7b4-4647-958c-e8e13051ddc3", "hostname": "workstation"},
   "status": "active",
   "allocations": [
     {"name": "frontend", "purpose": "frontend", "protocol": "tcp", "port": 3001, "reservation_id": "..."},
@@ -227,7 +227,7 @@ case-insensitively) or a raw UUID.
 ```json
 {
   "project": "jarvis",
-  "host": "NTMKEYA",
+  "host": "workstation",
   "requests": [
     {"name": "frontend", "purpose": "frontend", "protocol": "tcp"},
     {"name": "api", "purpose": "api", "protocol": "tcp", "preferred_port": 8080}
@@ -258,7 +258,7 @@ string transformation (see `cli.py::_env_var_name`). Phase 8A intentionally
 only *outputs* these values; it does not write a `.env` file.
 
 ```
-$ portforge allocate --host NTMKEYA --project jarvis \
+$ portforge allocate --host workstation --project jarvis \
     --request frontend:frontend:tcp --request api:api:tcp --format env
 FRONTEND_PORT=3001
 API_PORT=8001

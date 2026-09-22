@@ -37,7 +37,7 @@ back*. A probe result is a point-in-time observation, not a lock.
 ## Design: queued probe request, delivered and answered on heartbeat
 
 ```
-Central                                  Remote Agent (e.g. lenovoserver)
+Central                                  Remote Agent (e.g. server-a)
   |  probe request queued for host X          |
   |  (created by an allocation/recommendation  |
   |   call, or directly via a new endpoint)    |
@@ -73,9 +73,9 @@ initiates a connection.
 ### Race condition — stated plainly, not hand-waved
 
 ```
-t0: Central asks lenovoserver to probe port 8000 -- free
+t0: Central asks server-a to probe port 8000 -- free
 t1: probe result reported to Central: "8000 was free at t0"
-t2: some OTHER process on lenovoserver binds port 8000
+t2: some OTHER process on server-a binds port 8000
 t3: Central allocates port 8000 based on the t1 result
 ```
 

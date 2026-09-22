@@ -6,7 +6,7 @@ version: 1
 project: jarvis
 
 target:
-  host: NTMKEYA
+  host: workstation
 
 ports:
   frontend:

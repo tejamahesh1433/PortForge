@@ -40,7 +40,7 @@ capability.
 gap (enrollment token minting); no new attack surface otherwise.
 **Automated tests**: doctor's per-check unit/integration tests;
 protocol-version comparison unit tests; service-update idempotency test.
-**Physical acceptance**: doctor run against a genuinely healthy NTMKEYA
+**Physical acceptance**: doctor run against a genuinely healthy workstation
 setup, then against deliberately broken states, per `test-strategy.md`.
 **Rollback strategy**: every change here is additive or docs-only — revert
 is a plain `git revert`, no data migration to undo.
@@ -80,7 +80,7 @@ rate-limiting from day one, not after (see `security-review.md`).
 load-bearing one for this whole increment — the feature isn't "done"
 without it.
 **Physical acceptance**: real probe against a real remote host
-(lenovoserver), real offline-host expiry (reuse Phase 7C.5's proven
+(server-a), real offline-host expiry (reuse Phase 7C.5's proven
 HEALTHY→STALE→OFFLINE technique), real race test.
 **Rollback strategy**: migration must have a real `downgrade()` (matching
 every existing migration's own tested pattern); feature-flaggable so
@@ -117,7 +117,7 @@ new path-safety mechanism to get wrong.
 add/update, `nodePort` add/update, ambiguity refusal — direct analogs of
 every existing `test_compose_editor.py` case.
 **Physical acceptance**: a real `kind` (or Docker Desktop Kubernetes)
-cluster on NTMKEYA, a real Deployment+Service manifest, `config plan`/
+cluster on workstation, a real Deployment+Service manifest, `config plan`/
 `apply`, `kubectl apply --dry-run=client` (or a real apply into a
 throwaway cluster + `kubectl delete`).
 **Rollback strategy**: identical to existing Compose rollback (byte-exact
@@ -180,7 +180,7 @@ runs `pip install` is itself something a security-conscious user should
 be able to read before running — ship it readable/short, not a piped
 `curl | sh` one-liner with no inspection step.
 **Automated tests**: script logic tested in CI on a clean container per
-OS where feasible; physical test on a genuinely clean NTMKEYA snapshot if
+OS where feasible; physical test on a genuinely clean workstation snapshot if
 available.
 **Rollback strategy**: scripts only, no state to roll back.
 **Definition of Done**: a clean Windows/macOS/Linux machine goes from

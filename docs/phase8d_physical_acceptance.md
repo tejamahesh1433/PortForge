@@ -24,8 +24,8 @@
 - **Result:** PASS. Executed concurrently via background jobs. Allocated 3002 and 3003 respectively without race conditions or false conflicts.
 
 ## 7. Cross-Host Workflow
-- **Target:** lenovoserver (c603bcfa-2fd9-40f7-b9c2-bd93e2b43412)
-- **Result:** PASS. Created independent allocation on lenovoserver (port 3000), proving reservations are correctly scoped by host.
+- **Target:** server-a (c603bcfa-2fd9-40f7-b9c2-bd93e2b43412)
+- **Result:** PASS. Created independent allocation on server-a (port 3000), proving reservations are correctly scoped by host.
 
 ## 8. Interruption After Allocation
 - **Request ID:** interrupt-test-123

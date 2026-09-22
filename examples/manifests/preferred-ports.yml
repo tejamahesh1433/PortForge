@@ -7,7 +7,7 @@ version: 1
 project: legacy-migration
 
 target:
-  host: NTMKEYA
+  host: workstation
 
 ports:
   frontend:

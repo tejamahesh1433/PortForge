@@ -17,7 +17,7 @@ version: 1
 project: jarvis
 
 target:
-  host: NTMKEYA
+  host: workstation
 
 ports:
   frontend:
@@ -112,7 +112,7 @@ $ portforge project validate portforge.yml --json
   "valid": true,
   "version": 1,
   "project": "jarvis",
-  "host": {"id": "f90db087-f7b4-4647-958c-e8e13051ddc3", "hostname": "NTMKEYA"},
+  "host": {"id": "f90db087-f7b4-4647-958c-e8e13051ddc3", "hostname": "workstation"},
   "requests": 4
 }
 ```
@@ -131,7 +131,7 @@ $ portforge project plan portforge.yml --json
   "schema_version": 1,
   "committed": false,
   "project": "jarvis",
-  "host": {"id": "...", "hostname": "NTMKEYA"},
+  "host": {"id": "...", "hostname": "workstation"},
   "requests": [
     {
       "name": "frontend", "purpose": "frontend", "protocol": "tcp",
@@ -165,7 +165,7 @@ $ portforge project allocate portforge.yml --json
   "committed": true,
   "allocation_id": "b286a2ce-a1d2-4895-b6ce-52dcd0cf0b22",
   "project": "jarvis",
-  "host": {"id": "f90db087-f7b4-4647-958c-e8e13051ddc3", "hostname": "NTMKEYA"},
+  "host": {"id": "f90db087-f7b4-4647-958c-e8e13051ddc3", "hostname": "workstation"},
   "ports": {"frontend": 3001, "api": 8001, "database": 5432, "redis": 6380},
   "allocations": [ ... ]
 }

@@ -6,7 +6,7 @@ version: 1
 project: storefront
 
 target:
-  host: NTMKEYA
+  host: workstation
 
 ports:
   frontend:
