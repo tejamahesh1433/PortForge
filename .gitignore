@@ -23,3 +23,15 @@ dist/
 .idea/
 .env.*
 !.env.example
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# Generated debug, diagnostic, and state files
+diag*.json
+health*.json
+hosts*.json
+ports*.json
+status*.txt
+*_pid.txt
+*.log

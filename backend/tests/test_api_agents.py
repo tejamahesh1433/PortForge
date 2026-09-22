@@ -226,7 +226,7 @@ def test_enroll_with_matching_protocol_version_reports_compatible(client):
             "host_id": host_id,
             "hostname": "current-host",
             "operating_system": "windows",
-            "agent_version": "1.1.0",
+            "agent_version": "1.1.1",
             "docker_available": False,
             "protocol_version": PROTOCOL_VERSION,
         },
