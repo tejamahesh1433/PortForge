@@ -11,6 +11,10 @@
 - **New Authentication Mechanism:** per-device SSH key authentication (ed25519).
 - **Fleet Identity & Enrollment:** Preserved. Agents continue to run and report `agent_identity: ok` without requiring enrollment changes. Heartbeat and sync function normally over the new SSH key mechanism where applicable.
 
+
+- **Shared key**: shared temporary key removed
+- **Isolation**: cross-host isolation verified
+- **Note**: The earlier shared-key configuration was transitional and was replaced before history sanitation.
 ## Current-Tree Hardcoded Secret Removal
 - **deploy_remote.py Decision:** REMOVED (File was an obsolete helper script. Hardcoded credentials eliminated).
 
@@ -54,3 +58,4 @@ A plan has been formulated to purge historical credentials using `git filter-rep
 - `scripts/deploy_remote.py`
 
 This will be executed pending final authorization.
+
