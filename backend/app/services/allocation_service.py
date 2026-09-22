@@ -91,6 +91,7 @@ def _hash_payload(project: str, host_id: uuid.UUID, requests: List[AllocationReq
                     "purpose": item.purpose,
                     "protocol": item.protocol,
                     "preferred_port": item.preferred_port,
+                    "requested_range": item.requested_range,
                 }
                 for item in requests
             ),
@@ -137,8 +138,12 @@ def _ensure_host_allocatable(host) -> AllocationValidationOut:
         )
     return validation
 
-
-def _build_allocation_out(db: Session, allocation: Allocation, bind_probe: str = "not_remote_capable") -> AllocationOut:
+def _build_allocation_out(
+    db: Session, 
+    allocation: Allocation, 
+    bind_probe: str = "not_remote_capable",
+    requests: Optional[List[AllocationRequestItem]] = None
+) -> AllocationOut:
     host_repo = HostRepository(db)
     host = host_repo.get(allocation.host_id)
     reservation_repo = ReservationRepository(db)
@@ -147,10 +152,16 @@ def _build_allocation_out(db: Session, allocation: Allocation, bind_probe: str =
     # v1.1-D: live per-entry evidence -- bounded by MAX_BUNDLE_SIZE (<=20),
     # not a list-page N+1 (see list_allocations below for the batched
     # equivalent used there).
+    requests_by_name = {req.name: req for req in requests} if requests else {}
+
     entries = []
     for r in own_rows:
         protocol_value = r.protocol.value if hasattr(r.protocol, "value") else r.protocol
         evidence = probe_service.get_probe_evidence(db, allocation.host_id, r.port, protocol_value, r.bind_address or "0.0.0.0")
+        
+        req = requests_by_name.get(r.request_name)
+        req_range = req.requested_range if req else None
+
         entries.append(
             AllocationEntryOut(
                 name=r.request_name or "",
@@ -160,6 +171,7 @@ def _build_allocation_out(db: Session, allocation: Allocation, bind_probe: str =
                 reservation_id=r.id,
                 bind_address=r.bind_address,
                 bind_probe=evidence.bind_probe,
+                requested_range=req_range,
             )
         )
     return AllocationOut(
@@ -293,7 +305,9 @@ def create_allocation(db: Session, payload: AllocationIn) -> AllocationOut:
         existing = allocation_repo.get_by_request_id(payload.request_id)
         if existing is not None:
             if existing.request_payload_hash == payload_hash:
-                return _build_allocation_out(db, existing)
+                out = _build_allocation_out(db, existing, requests=payload.requests)
+                out.idempotent_replay = True
+                return out
             raise AllocationError(
                 code="IDEMPOTENCY_CONFLICT",
                 message=f"request_id '{payload.request_id}' was already used with a different request payload.",
@@ -389,7 +403,7 @@ def create_allocation(db: Session, payload: AllocationIn) -> AllocationOut:
 
     db.commit()
     db.refresh(allocation)
-    return _build_allocation_out(db, allocation, bind_probe=bundle_bind_probe)
+    return _build_allocation_out(db, allocation, bind_probe=bundle_bind_probe, requests=payload.requests)
 
 
 def _resolve_candidate(
@@ -414,14 +428,21 @@ def _resolve_candidate(
             probe_service.queue_probe(db, host_id, item.preferred_port, item.protocol)
         return item.preferred_port, probe_service.NOT_REMOTE_CAPABLE
 
-    result = find_available_port(db, host_id, item.purpose, item.protocol, exclude_ports=frozenset(claimed))
+    requested_range_tuple = None
+    if item.requested_range:
+        parts = item.requested_range.split("-")
+        requested_range_tuple = (int(parts[0]), int(parts[1]))
+
+    result = find_available_port(
+        db, host_id, item.purpose, item.protocol, exclude_ports=frozenset(claimed), requested_range=requested_range_tuple
+    )
     result, bind_probe = probe_service.resolve_with_probe_awareness(
         db,
         host_id,
         item.protocol,
         result,
         lambda exclude: find_available_port(
-            db, host_id, item.purpose, item.protocol, exclude_ports=frozenset(claimed) | exclude
+            db, host_id, item.purpose, item.protocol, exclude_ports=frozenset(claimed) | exclude, requested_range=requested_range_tuple
         ),
     )
     return result.port, bind_probe

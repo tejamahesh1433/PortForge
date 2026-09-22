@@ -20,7 +20,7 @@ Reservations, conflicts, and recommendation (Phase 4):
 Agent allocation (Phase 8A -- provider-independent; see
 docs/phase8a_agent_allocation.md for the full contract):
     python -m portforge_agent allocate --host H --project P
-                                        --request NAME:PURPOSE[:PROTOCOL[:PREFERRED_PORT]] [...]
+                                        --request NAME:PURPOSE[:PROTOCOL[:PREFERRED_PORT_OR_RANGE[:RANGE]]] [...]
                                         [--request-id ID] [--url URL] [--json] [--format text|env]
     python -m portforge_agent allocate --file portforge.request.json [--url URL] [--json] [--format text|env]
     python -m portforge_agent allocate --stdin [--url URL] [--json] [--format text|env]
@@ -650,10 +650,10 @@ def _allocation_client(args: argparse.Namespace):
 
 
 def _parse_request_flag(value: str) -> "tuple[Optional[dict], Optional[str]]":
-    """Parses one `--request` flag value: `name:purpose[:protocol[:preferred_port]]`."""
+    """Parses one `--request` flag value: `name:purpose[:protocol[:preferred_port_or_range[:range]]]`."""
     parts = value.split(":")
-    if len(parts) < 2 or len(parts) > 4:
-        return None, f"Invalid --request '{value}' -- expected name:purpose[:protocol[:preferred_port]]"
+    if len(parts) < 2 or len(parts) > 5:
+        return None, f"Invalid --request '{value}' -- expected name:purpose[:protocol[:preferred_port_or_range[:range]]]"
 
     name, purpose = parts[0].strip(), parts[1].strip()
     if not name or not purpose:
@@ -662,11 +662,35 @@ def _parse_request_flag(value: str) -> "tuple[Optional[dict], Optional[str]]":
     request: dict = {"name": name, "purpose": purpose}
     if len(parts) >= 3 and parts[2].strip():
         request["protocol"] = parts[2].strip()
-    if len(parts) == 4 and parts[3].strip():
+
+    # Determine if the 4th/5th elements are preferred_port or range
+    if len(parts) >= 4:
+        p3 = parts[3].strip()
+        if "-" in p3:
+            request["requested_range"] = p3
+        elif p3:
+            try:
+                request["preferred_port"] = int(p3)
+            except ValueError:
+                return None, f"Invalid --request '{value}' -- preferred_port must be an integer"
+                
+    if len(parts) == 5:
+        p4 = parts[4].strip()
+        if p4:
+            if "requested_range" in request:
+                return None, f"Invalid --request '{value}' -- range already specified"
+            if "-" not in p4:
+                return None, f"Invalid --request '{value}' -- range must contain '-'"
+            request["requested_range"] = p4
+
+    if "requested_range" in request and "preferred_port" in request:
+        parts_range = request["requested_range"].split("-")
         try:
-            request["preferred_port"] = int(parts[3])
+            min_port, max_port = int(parts_range[0]), int(parts_range[1])
+            if not (min_port <= request["preferred_port"] <= max_port):
+                return None, f"Invalid --request '{value}' -- preferred_port {request['preferred_port']} is outside requested_range {request['requested_range']}"
         except ValueError:
-            return None, f"Invalid --request '{value}' -- preferred_port must be an integer"
+            pass # Pydantic will catch invalid bounds later, but CLI parser won't crash
 
     return request, None
 
@@ -1556,8 +1580,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--request",
         action="append",
         default=None,
-        metavar="NAME:PURPOSE[:PROTOCOL[:PREFERRED_PORT]]",
-        help="Repeatable. e.g. --request frontend:frontend:tcp",
+        metavar="NAME:PURPOSE[:PROTOCOL[:PREFERRED_PORT_OR_RANGE[:RANGE]]]",
+        help="Repeatable. e.g. --request frontend:frontend:tcp or api:api:tcp:8000-8999",
     )
     allocate_parser.add_argument("--request-id", type=str, default=None, help="Idempotency key")
     allocate_parser.add_argument("--file", type=str, default=None, help="Read the full request from a JSON file")

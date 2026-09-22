@@ -38,6 +38,7 @@ class AllocationRequestItem(ApiModel):
     # "Try this port first if safe" -- never "force this port even if
     # occupied" (see docs/phase8a_agent_allocation.md "Preferred port").
     preferred_port: Optional[int] = Field(default=None, ge=1, le=65535)
+    requested_range: Optional[str] = Field(default=None)
 
     @field_validator("name")
     @classmethod
@@ -46,6 +47,40 @@ class AllocationRequestItem(ApiModel):
         if not stripped:
             raise ValueError("name must not be blank")
         return stripped
+
+    @field_validator("requested_range")
+    @classmethod
+    def _validate_requested_range(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        parts = value.split("-")
+        if len(parts) != 2:
+            raise ValueError(f"range must be in MIN-MAX format, got '{value}'")
+        try:
+            min_port = int(parts[0])
+            max_port = int(parts[1])
+        except ValueError:
+            raise ValueError(f"range bounds must be integers, got '{value}'")
+        
+        if not (1 <= min_port <= 65535):
+            raise ValueError(f"range min_port must be between 1 and 65535, got {min_port}")
+        if not (1 <= max_port <= 65535):
+            raise ValueError(f"range max_port must be between 1 and 65535, got {max_port}")
+        if min_port > max_port:
+            raise ValueError(f"range min_port must be <= max_port, got {min_port}-{max_port}")
+        
+        return value
+
+    @model_validator(mode="after")
+    def _preferred_port_within_range(self) -> "AllocationRequestItem":
+        if self.preferred_port is not None and self.requested_range is not None:
+            parts = self.requested_range.split("-")
+            min_port, max_port = int(parts[0]), int(parts[1])
+            if not (min_port <= self.preferred_port <= max_port):
+                raise ValueError(
+                    f"preferred_port {self.preferred_port} is outside requested_range {self.requested_range}"
+                )
+        return self
 
 
 class AllocationIn(ApiModel):
@@ -84,6 +119,8 @@ class AllocationEntryOut(ApiModel):
     # "Remote-probe evidence on allocations" for why. Same 5-value
     # contract as AllocationValidationOut.bind_probe.
     bind_probe: str = "not_remote_capable"
+    # v1.2: additive/optional range constraint
+    requested_range: Optional[str] = None
 
 
 class AllocationValidationOut(ApiModel):

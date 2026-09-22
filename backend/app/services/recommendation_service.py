@@ -64,6 +64,7 @@ def find_available_port(
     service_type: str,
     protocol: str = "tcp",
     exclude_ports: FrozenSet[int] = frozenset(),
+    requested_range: Optional[tuple[int, int]] = None,
 ) -> CandidateSearchResult:
     """The one candidate-search implementation shared by the recommendation
     endpoint (`suggest_port` below) and Phase 8A's allocation bundle
@@ -75,11 +76,13 @@ def find_available_port(
     claimed by an earlier item in the same in-progress bundle, which are
     not yet committed/visible to a fresh query).
     """
-    port_range = DEFAULT_RANGES.get(service_type)
-    if port_range is None:
-        return CandidateSearchResult(port=None, candidates_considered=0, excluded=[])
-
-    start, end = port_range
+    if requested_range is not None:
+        start, end = requested_range
+    else:
+        port_range = DEFAULT_RANGES.get(service_type)
+        if port_range is None:
+            return CandidateSearchResult(port=None, candidates_considered=0, excluded=[])
+        start, end = port_range
     port_repo = PortRepository(db)
     reservation_repo = ReservationRepository(db)
 
