@@ -49,7 +49,7 @@ _PROTOCOLS = ("tcp", "udp")
 # without it validates exactly as it did in Phase 8B (backward compatible).
 _TOP_LEVEL_KEYS = {"version", "project", "target", "ports", "request_id", "config"}
 _TARGET_KEYS = {"host"}
-_PORT_ENTRY_KEYS = {"purpose", "protocol", "preferred"}
+_PORT_ENTRY_KEYS = {"purpose", "protocol", "preferred", "range", "requested_range"}
 
 _CONFIG_KEYS = {"dotenv", "compose", "kubernetes"}
 _DOTENV_ENTRY_KEYS = {"file", "values"}
@@ -97,6 +97,7 @@ class ManifestPortRequest:
     purpose: str
     protocol: str
     preferred_port: Optional[int]
+    requested_range: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -162,17 +163,18 @@ class ProjectManifest:
     config: Optional[ConfigMappings]  # Phase 8C, optional -- None for a Phase 8B-only manifest
 
 
-def discover_manifest_path(start_dir: Optional[str] = None) -> Optional[Path]:
+def discover_manifest_path(start_dir: Optional[str] = None, walk_up: bool = False) -> Optional[Path]:
     """Checks `MANIFEST_FILENAMES` in order, in `start_dir` (default: cwd)
-    ONLY -- deliberately no upward walk (see docs/phase8b_manifest_audit.md
-    "Discovery scope"). An explicit path given on the command line always
-    takes priority over this and never calls into this function.
+    The current directory is checked first, followed by its parents. An
+    explicit path given on the command line always takes priority.
     """
-    base = Path(start_dir) if start_dir else Path.cwd()
-    for name in MANIFEST_FILENAMES:
-        candidate = base / name
-        if candidate.is_file():
-            return candidate
+    base = (Path(start_dir) if start_dir else Path.cwd()).resolve()
+    directories = (base, *base.parents) if walk_up else (base,)
+    for directory in directories:
+        for name in MANIFEST_FILENAMES:
+            candidate = directory / name
+            if candidate.is_file():
+                return candidate
     return None
 
 
@@ -270,7 +272,20 @@ def _validate_port_entry(name: str, entry: Any) -> ManifestPortRequest:
             )
         preferred_port = raw
 
-    return ManifestPortRequest(name=name.strip(), purpose=purpose, protocol=protocol, preferred_port=preferred_port)
+    requested_range: Optional[str] = None
+    if "range" in entry and "requested_range" in entry:
+        raise ManifestError("MANIFEST_INVALID", f"'{context}' may specify only one of 'range' or 'requested_range'.")
+    raw_range = entry.get("range", entry.get("requested_range"))
+    if raw_range is not None:
+        if not isinstance(raw_range, str) or not re.fullmatch(r"[0-9]+-[0-9]+", raw_range.strip()):
+            raise ManifestError("MANIFEST_INVALID", f"'{context}.range' must use MIN-MAX format.")
+        start, end = (int(part) for part in raw_range.strip().split("-"))
+        if not (1 <= start <= 65535 and 1 <= end <= 65535 and start <= end):
+            raise ManifestError("MANIFEST_INVALID", f"'{context}.range' must be within 1-65535 with MIN <= MAX.")
+        requested_range = f"{start}-{end}"
+        if preferred_port is not None and not (start <= preferred_port <= end):
+            raise ManifestError("MANIFEST_INVALID", f"'{context}.preferred' must fall inside '{requested_range}'.")
+    return ManifestPortRequest(name=name.strip(), purpose=purpose, protocol=protocol, preferred_port=preferred_port, requested_range=requested_range)
 
 
 def _validate_dotenv_mapping(entry: Any, index: int, known_names: set) -> DotenvFileMapping:
@@ -628,10 +643,12 @@ def validate_manifest(data: Dict[str, Any]) -> ProjectManifest:
     project = _require_string(data, "project", "manifest", max_length=255)
 
     target = data.get("target")
-    if not isinstance(target, dict):
-        raise ManifestError("MANIFEST_INVALID", "'target' must be a mapping with a 'host' field.")
-    _reject_unknown_keys(target, _TARGET_KEYS, "target")
-    host = _require_string(target, "host", "target", max_length=255)
+    host: Optional[str] = None
+    if target is not None:
+        if not isinstance(target, dict):
+            raise ManifestError("MANIFEST_INVALID", "'target' must be a mapping with a 'host' field.")
+        _reject_unknown_keys(target, _TARGET_KEYS, "target")
+        host = _require_string(target, "host", "target", max_length=255)
 
     ports = data.get("ports")
     if not isinstance(ports, dict):
@@ -640,8 +657,8 @@ def validate_manifest(data: Dict[str, Any]) -> ProjectManifest:
             "'ports' must be a mapping of name -> {purpose, protocol?, preferred?} "
             "(a list is Phase 4's separate .portforge.yml 'ports' schema, not this manifest's).",
         )
-    if len(ports) == 0:
-        raise ManifestError("MANIFEST_INVALID", "'ports' must contain at least one entry.")
+    if len(ports) == 0 and target is not None:
+        raise ManifestError("MANIFEST_INVALID", "'ports' must contain at least one entry when a target is declared.")
     if len(ports) > MAX_PORTS_PER_MANIFEST:
         raise ManifestError(
             "MANIFEST_INVALID",
@@ -672,7 +689,7 @@ def load_and_validate_manifest(path: Optional[Path], start_dir: Optional[str] = 
     fails first.
     """
     if path is None:
-        discovered = discover_manifest_path(start_dir)
+        discovered = discover_manifest_path(start_dir, walk_up=True)
         if discovered is None:
             raise ManifestError(
                 "MANIFEST_NOT_FOUND",

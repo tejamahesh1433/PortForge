@@ -65,7 +65,7 @@ from .reserve_ops import release as reserve_ops_release
 from .reserve_ops import release_by_id as reserve_ops_release_by_id
 from .reserve_ops import reserve as reserve_ops_reserve
 from .reserve_ops import sync_project_reservations
-from .manifest import ManifestError, load_and_validate_manifest
+from .manifest import ManifestError, discover_manifest_path, load_and_validate_manifest
 from .project_adapter import build_candidate_preview, build_normalized_request, resolve_host_ref, to_allocation_body
 from . import config_manager as _config_manager
 from .config_files import ConfigPathError as _ConfigPathError
@@ -1033,32 +1033,80 @@ def _load_manifest_and_host(args: argparse.Namespace):
 
 
 def _cmd_project_validate(args: argparse.Namespace) -> int:
-    client, manifest, host, error_code = _load_manifest_and_host(args)
-    if error_code is not None:
-        return error_code
-
+    # Validation is local by default. Supplying --url preserves the older
+    # host-resolution behavior for callers that explicitly requested it.
+    try:
+        manifest = load_and_validate_manifest(_project_manifest_path(args))
+    except ManifestError as exc:
+        _print_manifest_error(exc, args)
+        return 2
+    host_payload = manifest.host
+    if getattr(args, "url", None):
+        client, url_error = _allocation_client(args)
+        if url_error:
+            _print_manifest_error(ManifestError("CENTRAL_UNAVAILABLE", url_error), args)
+            return 2
+        host, host_error, host_code = resolve_host_ref(client, manifest.host or "")
+        if host_error:
+            payload={"error":{"code":host_code,"message":host_error,"details":[]}}
+            print(json.dumps(payload, indent=2)) if args.json else print(f"Error: {host_error}", file=sys.stderr)
+            return 2
+        host_payload={"id":host.id,"hostname":host.hostname}
     if args.json:
-        print(
-            json.dumps(
-                {
-                    "valid": True,
-                    "version": manifest.version,
-                    "project": manifest.project,
-                    "host": {"id": host.id, "hostname": host.hostname},
-                    "requests": len(manifest.requests),
-                },
-                indent=2,
-            )
-        )
+        payload = {"valid": True, "version": manifest.version, "project": manifest.project, "host": host_payload, "requests": len(manifest.requests)}
+        if not getattr(args, "url", None):
+            payload.update({"manifest": str((_project_manifest_path(args) or discover_manifest_path(walk_up=True)).resolve()), "services": [item.name for item in manifest.requests]})
+        print(json.dumps(payload, indent=2))
     else:
         print(f"Manifest is valid (version {manifest.version}).")
         print(f"Project: {manifest.project}")
-        print(f"Host: {host.hostname} ({host.id})")
+        print(f"Host: {host_payload or 'unassigned'}")
         print(f"Requests: {len(manifest.requests)}")
         for item in manifest.requests:
             preferred = f"  preferred={item.preferred_port}" if item.preferred_port else ""
-            print(f"  {item.name:<20} {item.purpose:<12} {item.protocol}{preferred}")
+            requested = f"  range={item.requested_range}" if item.requested_range else ""
+            print(f"  {item.name:<20} {item.purpose:<12} {item.protocol}{preferred}{requested}")
+    return 0
 
+
+def _cmd_project_status(args: argparse.Namespace) -> int:
+    try:
+        path = _project_manifest_path(args) or discover_manifest_path(walk_up=True)
+        manifest = load_and_validate_manifest(path)
+    except ManifestError as exc:
+        _print_manifest_error(exc, args)
+        return 2
+    rows = []
+    for item in manifest.requests:
+        rows.append({"service": item.name, "purpose": item.purpose, "protocol": item.protocol, "preferred_port": item.preferred_port, "requested_range": item.requested_range, "allocation_status": "UNALLOCATED"})
+    central_available = False
+    central_error = None
+    allocations = []
+    client, url_error = _allocation_client(args)
+    if not url_error:
+        result = client.list_allocations()
+        central_available = result.success
+        central_error = result.error if not result.success else None
+        if result.success:
+            allocations = result.data.get("items", []) if isinstance(result.data, dict) else (result.data or [])
+    else:
+        central_error = url_error
+    for allocation in allocations:
+        if allocation.get("project") != manifest.project:
+            continue
+        for entry in allocation.get("allocations", []):
+            match = next((row for row in rows if row["service"] == entry.get("name")), None)
+            if match is not None:
+                match.update({"allocation_id": allocation.get("allocation_id"), "host": allocation.get("host"), "allocated_port": entry.get("port"), "allocation_status": allocation.get("status"), "verification": entry.get("bind_probe", allocation.get("validation", {}).get("bind_probe"))})
+    payload={"project": manifest.project, "manifest_path": str(path.resolve()) if path else None, "manifest_valid": True, "central_available": central_available, "central_error": central_error, "services": rows}
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(f"Project: {manifest.project}")
+        print(f"Manifest: {payload['manifest_path']}")
+        print(f"Central: {'AVAILABLE' if central_available else 'UNAVAILABLE'}")
+        for row in rows:
+            print(f"  {row['service']}: {row['allocation_status']} protocol={row['protocol']} port={row.get('allocated_port', '-')}")
     return 0
 
 
@@ -1148,12 +1196,15 @@ def _cmd_project_allocate(args: argparse.Namespace) -> int:
 
 def _cmd_project_init(args):
     try:
+        from pathlib import Path
+        project = args.project or Path.cwd().name or "project"
+        host = args.host or None
+        ports = args.port or []
         if args.stdout:
-            text = render_manifest(args.project, args.host, args.port)
+            text = render_manifest(project, host, ports)
             print(json.dumps({"created": False, "manifest": text}, indent=2) if args.json else text, end=None if args.json else "")
             return 0
-        from pathlib import Path
-        path = create_manifest(args.project, args.host, args.port, Path(args.output) if args.output else None)
+        path = create_manifest(project, host, ports, Path(args.output) if args.output else None)
     except ManifestError as exc:
         _print_manifest_error(exc, args); return 2
     print(json.dumps({"created": True, "path": str(path.resolve())}, indent=2) if args.json else f"Created {path}"); return 0
@@ -1757,9 +1808,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     project_allocate_parser.add_argument("--format", type=str, default="text", choices=["text", "env"])
     project_allocate_parser.set_defaults(func=_cmd_project_allocate)
-    project_init_parser = project_subparsers.add_parser("init", help="Create a starter manifest without overwriting")
-    project_init_parser.add_argument("--project", required=True); project_init_parser.add_argument("--host", required=True)
-    project_init_parser.add_argument("--port", action="append", required=True, metavar="NAME:PURPOSE[:PROTOCOL]")
+    project_status_parser = project_subparsers.add_parser("status", help="Show manifest intent and existing allocations without mutating state")
+    _add_manifest_arg(project_status_parser)
+    project_status_parser.set_defaults(func=_cmd_project_status)
+    project_init_parser = project_subparsers.add_parser("init", help="Create a conservative starter manifest without overwriting")
+    project_init_parser.add_argument("--project", required=False); project_init_parser.add_argument("--host", required=False)
+    project_init_parser.add_argument("--port", action="append", required=False, metavar="NAME:PURPOSE[:PROTOCOL]")
     project_init_parser.add_argument("--output"); project_init_parser.add_argument("--stdout", action="store_true"); project_init_parser.add_argument("--json", action="store_true")
     project_init_parser.set_defaults(func=_cmd_project_init)
 

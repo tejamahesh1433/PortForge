@@ -159,6 +159,7 @@ def to_allocation_body(normalized: NormalizedProjectRequest, request_id: Optiona
             "purpose": item.purpose,
             "protocol": item.protocol,
             **({"preferred_port": item.preferred_port} if item.preferred_port is not None else {}),
+            **({"requested_range": item.requested_range} if item.requested_range is not None else {}),
         }
         for item in normalized.requests
     ]
