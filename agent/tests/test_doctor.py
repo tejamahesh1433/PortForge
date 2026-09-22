@@ -40,7 +40,7 @@ def _healthy_client(central_protocol_version=PROTOCOL_VERSION):
     client = MagicMock()
     client.health.return_value = MagicMock(
         success=True,
-        data={"status": "ok", "service": "portforge", "database": "connected", "version": "1.1.1", "protocol_version": central_protocol_version},
+        data={"status": "ok", "service": "portforge", "database": "connected", "version": "1.1.2", "protocol_version": central_protocol_version},
     )
     return client
 
