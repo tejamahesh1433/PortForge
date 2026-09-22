@@ -55,3 +55,8 @@ def get_allocation(allocation_id: uuid.UUID, db: Session = Depends(get_db)) -> A
 @router.delete("/{allocation_id}", response_model=AllocationOut)
 def release_allocation(allocation_id: uuid.UUID, db: Session = Depends(get_db)) -> AllocationOut:
     return allocation_service.release_allocation(db, allocation_id)
+
+
+@router.post("/{allocation_id}/verify", response_model=AllocationOut)
+def verify_allocation(allocation_id: uuid.UUID, db: Session = Depends(get_db)) -> AllocationOut:
+    return allocation_service.verify_allocation(db, allocation_id)

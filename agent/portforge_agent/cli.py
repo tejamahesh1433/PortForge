@@ -874,6 +874,15 @@ def _cmd_allocation_release(args: argparse.Namespace) -> int:
         payload = result.data if isinstance(result.data, dict) and "error" in result.data else {
             "error": {"code": "ALLOCATION_NOT_FOUND", "message": result.error or "Not found.", "details": []}
         }
+        
+        # Idempotency: if already released or not found on delete, consider it released.
+        if payload.get("error", {}).get("code") == "ALLOCATION_NOT_FOUND":
+            if args.json:
+                print(json.dumps({"status": "released", "idempotent_replay": True}, indent=2))
+            else:
+                print("Allocation already released (or not found).")
+            return 0
+
         _print_allocation_error(payload, args)
         return 1
 
@@ -882,6 +891,88 @@ def _cmd_allocation_release(args: argparse.Namespace) -> int:
     else:
         _render_allocation_human(result.data, "Allocation released")
 
+    return 0
+
+def _cmd_allocation_verify(args: argparse.Namespace) -> int:
+    client, error = _allocation_client(args)
+    if error:
+        print(json.dumps({"error": {"code": "INVALID_REQUEST", "message": error}}, indent=2)) if args.json else print(
+            f"Error: {error}", file=sys.stderr
+        )
+        return 2
+
+    # First get the allocation to see if it's local or remote
+    result = client.get_allocation(args.allocation_id)
+    if not result.success:
+        payload = result.data if isinstance(result.data, dict) and "error" in result.data else {
+            "error": {"code": "ALLOCATION_NOT_FOUND", "message": result.error or "Not found.", "details": []}
+        }
+        _print_allocation_error(payload, args)
+        return 1
+        
+    allocation = result.data
+    
+    # Check if local
+    is_local = False
+    if allocation.get("host", {}).get("id") == str(pf.get_host_id()):
+        is_local = True
+
+    if is_local:
+        # Local verify logic
+        from .bindprobe import probe_bind
+        entries = allocation.get("allocations", [])
+        for entry in entries:
+            evidence = probe_bind(entry["port"], entry["protocol"], entry.get("bind_address") or "0.0.0.0")
+            entry["bind_probe"] = "verified_free" if evidence.available else "verified_occupied"
+            entry["verification_source"] = "local"
+    else:
+        # Remote verify
+        result = client.verify_allocation(args.allocation_id)
+        if not result.success:
+            payload = result.data if isinstance(result.data, dict) and "error" in result.data else {
+                "error": {"code": "ALLOCATION_VERIFY_FAILED", "message": result.error or "Verify failed.", "details": []}
+            }
+            _print_allocation_error(payload, args)
+            return 1
+        allocation = result.data
+
+    if args.json:
+        print(json.dumps(allocation, indent=2))
+    elif args.format == "env":
+        print(_render_allocation_env(allocation))
+    else:
+        _render_allocation_human(allocation, "Allocation verified")
+        
+    return 0
+    
+
+def _cmd_allocation_list(args: argparse.Namespace) -> int:
+    client, error = _allocation_client(args)
+    if error:
+        print(json.dumps({"error": {"code": "INVALID_REQUEST", "message": error}}, indent=2)) if args.json else print(
+            f"Error: {error}", file=sys.stderr
+        )
+        return 2
+
+    result = client.list_allocations()
+    if not result.success:
+        payload = result.data if isinstance(result.data, dict) and "error" in result.data else {
+            "error": {"code": "LIST_FAILED", "message": result.error or "Failed.", "details": []}
+        }
+        _print_allocation_error(payload, args)
+        return 1
+
+    allocations = result.data.get("items", []) if isinstance(result.data, dict) and "items" in result.data else result.data
+    
+    if args.json:
+        print(json.dumps(allocations, indent=2))
+    else:
+        for alloc in allocations:
+            print(f"ID: {alloc['allocation_id']} | Project: {alloc['project']} | Host: {alloc['host']['hostname']} | Status: {alloc['status']}")
+            for entry in alloc.get("allocations", []):
+                print(f"  {entry['name']:<20} {entry['purpose']:<12} {entry['port']}/{entry['protocol']} {entry.get('bind_probe', '')}")
+            print()
+            
     return 0
 
 
@@ -1600,6 +1691,25 @@ def build_parser() -> argparse.ArgumentParser:
     allocation_get_parser.add_argument("--json", action="store_true")
     allocation_get_parser.add_argument("--format", type=str, default="text", choices=["text", "env"])
     allocation_get_parser.set_defaults(func=_cmd_allocation_get)
+    
+    allocation_status_parser = allocation_subparsers.add_parser("status", help="Show an allocation's current state (alias for get)")
+    allocation_status_parser.add_argument("allocation_id", type=str)
+    allocation_status_parser.add_argument("--url", type=str, default=None)
+    allocation_status_parser.add_argument("--json", action="store_true")
+    allocation_status_parser.add_argument("--format", type=str, default="text", choices=["text", "env"])
+    allocation_status_parser.set_defaults(func=_cmd_allocation_get)
+    
+    allocation_verify_parser = allocation_subparsers.add_parser("verify", help="Verify an allocation's ports")
+    allocation_verify_parser.add_argument("allocation_id", type=str)
+    allocation_verify_parser.add_argument("--url", type=str, default=None)
+    allocation_verify_parser.add_argument("--json", action="store_true")
+    allocation_verify_parser.add_argument("--format", type=str, default="text", choices=["text", "env"])
+    allocation_verify_parser.set_defaults(func=_cmd_allocation_verify)
+
+    allocation_list_parser = allocation_subparsers.add_parser("list", help="List allocations")
+    allocation_list_parser.add_argument("--url", type=str, default=None)
+    allocation_list_parser.add_argument("--json", action="store_true")
+    allocation_list_parser.set_defaults(func=_cmd_allocation_list)
 
     allocation_release_parser = allocation_subparsers.add_parser(
         "release", help="Release all still-active reservations belonging to an allocation"

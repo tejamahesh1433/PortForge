@@ -206,6 +206,12 @@ class CentralClient:
 
     def release_allocation(self, allocation_id: str) -> CentralResult:
         return self._request("DELETE", f"/api/allocations/{allocation_id}", authenticated=False)
+        
+    def verify_allocation(self, allocation_id: str) -> CentralResult:
+        return self._request("POST", f"/api/allocations/{allocation_id}/verify", authenticated=False)
+        
+    def list_allocations(self) -> CentralResult:
+        return self._request("GET", "/api/allocations?limit=100", authenticated=False)
 
     def list_hosts(self, limit: int = 500) -> CentralResult:
         return self._request("GET", f"/api/hosts?limit={limit}", authenticated=False)

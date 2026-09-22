@@ -515,3 +515,54 @@ def release_allocation(db: Session, allocation_id: uuid.UUID) -> AllocationOut:
     db.commit()
     db.refresh(allocation)
     return _build_allocation_out(db, allocation)
+
+
+def verify_allocation(db: Session, allocation_id: uuid.UUID, timeout_seconds: int = 10) -> AllocationOut:
+    """Verifies all ports in the allocation using remote probes.
+    For local allocations (or where the CLI bypasses this), CLI handles it.
+    This polls the DB for up to `timeout_seconds` to wait for the agent to report.
+    Returns the AllocationOut with fresh `bind_probe` evidence.
+    """
+    import time
+    
+    allocation = AllocationRepository(db).get(allocation_id)
+    if allocation is None:
+        raise AllocationError(
+            code="ALLOCATION_NOT_FOUND",
+            message=f"No allocation with id '{allocation_id}'.",
+            status_code=404,
+        )
+
+    reservation_repo = ReservationRepository(db)
+    rows, _ = reservation_repo.list(host_id=allocation.host_id, limit=1000)
+    own_rows = [r for r in rows if r.allocation_id == allocation.id]
+
+    # Queue probes for all ports
+    for r in own_rows:
+        protocol_value = r.protocol.value if hasattr(r.protocol, "value") else r.protocol
+        probe_service.queue_probe(db, allocation.host_id, r.port, protocol_value, r.bind_address or "0.0.0.0")
+
+    db.commit()
+
+    # Poll for results
+    start = time.time()
+    while time.time() - start < timeout_seconds:
+        # Check if all probes are COMPLETED or FAILED or EXPIRED
+        all_done = True
+        evidence_map = probe_service.get_probe_evidence_map(db, [allocation.host_id])
+        for r in own_rows:
+            protocol_value = r.protocol.value if hasattr(r.protocol, "value") else r.protocol
+            key = (allocation.host_id, r.port, protocol_value, r.bind_address or "0.0.0.0")
+            evidence = evidence_map.get(key)
+            # If evidence is missing, or it's PENDING/DELIVERED, it's not done
+            if not evidence or evidence.probe is None or evidence.probe.status in ("PENDING", "DELIVERED"):
+                all_done = False
+                break
+        
+        if all_done:
+            break
+        
+        time.sleep(0.5)
+
+    # Return updated allocation view
+    return _build_allocation_out(db, allocation)
