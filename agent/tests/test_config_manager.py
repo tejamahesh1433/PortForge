@@ -798,3 +798,30 @@ def test_kubernetes_status_never_leaks_secrets(tmp_path):
     cm.apply_mutation(tmp_path, plan.mutation_id)
     status = cm.get_status(tmp_path, plan.mutation_id)
     assert "super-secret-value" not in str(status)
+
+
+@pytest.mark.skipif(platform.system() == "Windows", reason="Windows does not expose POSIX mode bits for this preservation assertion")
+def test_atomic_write_preserves_existing_permissions(tmp_path):
+    target = tmp_path / ".env"
+    target.write_text("PORT=8000\n")
+    target.chmod(0o640)
+    from portforge_agent.config_files import atomic_write
+    atomic_write(target, b"PORT=8127\n")
+    assert target.read_text() == "PORT=8127\n"
+    assert target.stat().st_mode & 0o777 == 0o640
+
+
+def test_apply_validates_rendered_compose_before_commit(tmp_path, monkeypatch):
+    _write_project(tmp_path)
+    plan = cm.build_plan(_manifest(), _allocation(), tmp_path)
+    cm.persist_plan(plan, tmp_path)
+    def reject(text):
+        raise cm.ComposeError("CONFIG_PARSE_ERROR", "simulated post-write parse failure")
+
+    monkeypatch.setattr(cm, "load_compose", reject)
+    before = (tmp_path / "compose.yaml").read_bytes()
+    with pytest.raises(cm.ConfigError) as exc_info:
+        cm.apply_mutation(tmp_path, plan.mutation_id)
+    assert exc_info.value.code == "CONFIG_VALIDATION_FAILED"
+    assert (tmp_path / "compose.yaml").read_bytes() == before
+    assert (tmp_path / ".env").read_text() == "EXISTING=1\nFRONTEND_PORT=9999\n"

@@ -431,6 +431,17 @@ def find_latest_planned_mutation(project_root: Path, allocation_id: str) -> Opti
 # ---------------------------------------------------------------------------
 
 
+def _validate_rendered_file(kind: str, content: bytes) -> None:
+    try:
+        text = content.decode("utf-8")
+        if kind == "compose":
+            load_compose(text)
+        elif kind == "kubernetes":
+            load_kubernetes_documents(text)
+    except (UnicodeDecodeError, ComposeError, KubernetesError) as exc:
+        raise ConfigError("CONFIG_VALIDATION_FAILED", f"Rendered {kind} configuration is invalid: {exc}", status_code=409) from exc
+
+
 def apply_mutation(project_root: Path, mutation_id: str) -> dict:
     record = _load_record(project_root, mutation_id)
 
@@ -467,10 +478,15 @@ def apply_mutation(project_root: Path, mutation_id: str) -> dict:
     written: List[tuple] = []
     try:
         for f, target, _original_bytes in prepared:
-            atomic_write(target, f["new_content"].encode("utf-8"))
-            f["after_hash"] = sha256_bytes(f["new_content"].encode("utf-8"))
+            rendered = f["new_content"].encode("utf-8")
+            atomic_write(target, rendered)
             written.append((target, _original_bytes))
-    except OSError as exc:
+            live = read_file_bytes(target)
+            if live != rendered:
+                raise ConfigError("CONFIG_VALIDATION_FAILED", f"Written file '{f['relative_path']}' did not match the planned content.", status_code=409)
+            _validate_rendered_file(f["kind"], live)
+            f["after_hash"] = sha256_bytes(rendered)
+    except (OSError, ConfigError) as exc:
         # All-or-nothing: restore every target already written this call,
         # from the backup just taken above, before surfacing the failure
         # (task §21).
@@ -479,6 +495,8 @@ def apply_mutation(project_root: Path, mutation_id: str) -> dict:
                 atomic_write(target, original_bytes)
             else:
                 target.unlink(missing_ok=True)
+        if isinstance(exc, ConfigError):
+            raise exc
         raise ConfigError("CONFIG_APPLY_FAILED", f"Failed to apply config mutation: {exc}", status_code=500)
 
     record["status"] = "APPLIED"
