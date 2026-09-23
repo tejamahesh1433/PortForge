@@ -1,12 +1,16 @@
 """Platform-specific service restart adapters for agent self-upgrade (Phase 10).
 
 Each function restarts the PortForge agent daemon via the OS-native service
-manager. All service names/labels are hard-coded constants -- never sourced
-from any Central payload field.
+manager. Service names/labels default to production constants and may be
+overridden only via local environment variables (never from Central payload):
 
-Shell injection is impossible here: every subprocess call uses a literal
-list of strings with no user-supplied interpolation, shell=False (the
-default), and goes through run_subprocess() which also enforces no-shell.
+  PORTFORGE_WINDOWS_TASK_NAME
+  PORTFORGE_LINUX_SERVICE_NAME
+  PORTFORGE_MACOS_PLIST_LABEL
+  PORTFORGE_MACOS_PLIST_PATH
+
+Shell injection is impossible here: every subprocess call uses a list of
+strings with no shell=True, and goes through run_subprocess().
 """
 from __future__ import annotations
 
@@ -17,29 +21,59 @@ from typing import Optional
 
 logger = logging.getLogger("portforge_agent.upgrade.platform_restart")
 
-# Hard-coded service identifiers -- never from Central payload.
-_WINDOWS_TASK_NAME = "PortForge Agent"
-_LINUX_SERVICE_NAME = "portforge-agent.service"
-_MACOS_PLIST_LABEL = "com.portforge.agent"
+# Default production identifiers -- never from Central payload.
+_DEFAULT_WINDOWS_TASK_NAME = "PortForge Agent"
+_DEFAULT_LINUX_SERVICE_NAME = "portforge-agent.service"
+_DEFAULT_MACOS_PLIST_LABEL = "com.portforge.agent"
+
+
+def _windows_task_name() -> str:
+    return os.environ.get("PORTFORGE_WINDOWS_TASK_NAME") or _DEFAULT_WINDOWS_TASK_NAME
+
+
+def _linux_service_name() -> str:
+    return os.environ.get("PORTFORGE_LINUX_SERVICE_NAME") or _DEFAULT_LINUX_SERVICE_NAME
+
+
+def _macos_plist_label() -> str:
+    return os.environ.get("PORTFORGE_MACOS_PLIST_LABEL") or _DEFAULT_MACOS_PLIST_LABEL
 
 
 def restart_via_windows_scheduler() -> None:
-    """End and re-run the 'PortForge Agent' scheduled task.
+    """End and re-run the PortForge Scheduled Task (name from env or default).
 
-    /End is sent first (may fail if not running; ignored). /Run starts a
-    new instance immediately. Both calls use the literal task name above --
-    not a string from any network payload.
+    Qualification override: PORTFORGE_WINDOWS_RESTART_HELPER may point to an
+    absolute .cmd/.exe/.bat that restarts only the disposable agent. Never
+    sourced from Central.
     """
     from ..subprocess_util import run_subprocess
 
+    helper = os.environ.get("PORTFORGE_WINDOWS_RESTART_HELPER")
+    if helper:
+        helper_path = Path(helper)
+        if not helper_path.is_file():
+            raise RuntimeError(f"PORTFORGE_WINDOWS_RESTART_HELPER not found: {helper}")
+        result = run_subprocess(
+            [str(helper_path)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"restart helper failed (rc={result.returncode}): {result.stderr.strip()}"
+            )
+        return
+
+    task = _windows_task_name()
     run_subprocess(
-        ["schtasks", "/End", "/TN", _WINDOWS_TASK_NAME],
+        ["schtasks", "/End", "/TN", task],
         capture_output=True,
         text=True,
         timeout=30,
     )
     result = run_subprocess(
-        ["schtasks", "/Run", "/TN", _WINDOWS_TASK_NAME],
+        ["schtasks", "/Run", "/TN", task],
         capture_output=True,
         text=True,
         timeout=30,
@@ -51,11 +85,12 @@ def restart_via_windows_scheduler() -> None:
 
 
 def restart_via_systemd() -> None:
-    """Restart portforge-agent.service via systemctl --user."""
+    """Restart the PortForge user systemd unit (name from env or default)."""
     from ..subprocess_util import run_subprocess
 
+    unit = _linux_service_name()
     result = run_subprocess(
-        ["systemctl", "--user", "restart", _LINUX_SERVICE_NAME],
+        ["systemctl", "--user", "restart", unit],
         capture_output=True,
         text=True,
         timeout=30,
@@ -67,17 +102,14 @@ def restart_via_systemd() -> None:
 
 
 def restart_via_launchctl(plist_path: Optional[str] = None) -> None:
-    """Bootout and bootstrap the PortForge LaunchAgent plist.
-
-    bootout (unload) is attempted first; errors are ignored in case the
-    agent is not currently loaded. bootstrap (load+start) must succeed.
-    """
+    """Bootout and bootstrap the PortForge LaunchAgent plist."""
     from ..subprocess_util import run_subprocess
 
     if plist_path is None:
-        plist_path = str(
-            Path.home() / "Library" / "LaunchAgents" / f"{_MACOS_PLIST_LABEL}.plist"
-        )
+        plist_path = os.environ.get("PORTFORGE_MACOS_PLIST_PATH")
+    if plist_path is None:
+        label = _macos_plist_label()
+        plist_path = str(Path.home() / "Library" / "LaunchAgents" / f"{label}.plist")
 
     uid = os.getuid()
     target = f"gui/{uid}"

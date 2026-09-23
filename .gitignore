@@ -37,3 +37,4 @@ ports*.json
 status*.txt
 *_pid.txt
 *.log
+.qual-artifacts/

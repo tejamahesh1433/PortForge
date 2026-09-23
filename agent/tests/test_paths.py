@@ -56,6 +56,13 @@ def test_config_path_candidates_order(monkeypatch):
     assert [c.name for c in candidates] == ["config.yml", "config.yaml", "config.json"]
 
 
+def test_data_dir_honors_portforge_data_dir_override(monkeypatch, tmp_path):
+    """PORTFORGE_DATA_DIR is a local multi-instance override — never from Central."""
+    monkeypatch.setenv("PORTFORGE_DATA_DIR", str(tmp_path / "qual-data"))
+    result = paths.data_dir()
+    assert result == tmp_path / "qual-data"
+
+
 def test_no_hardcoded_username_in_module_source():
     import inspect
 

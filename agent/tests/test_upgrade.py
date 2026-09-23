@@ -628,3 +628,31 @@ def test_restart_service_dispatches_by_platform():
     ):
         pr.restart_service()
         mock_linux.assert_called_once()
+
+
+def test_restart_via_systemd_honors_service_name_env(monkeypatch):
+    from portforge_agent.upgrade.platform_restart import restart_via_systemd
+
+    monkeypatch.setenv("PORTFORGE_LINUX_SERVICE_NAME", "portforge-agent-qual.service")
+    with patch("portforge_agent.subprocess_util.run_subprocess") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        restart_via_systemd()
+    assert mock_run.call_args.args[0] == [
+        "systemctl",
+        "--user",
+        "restart",
+        "portforge-agent-qual.service",
+    ]
+
+
+def test_restart_via_windows_honors_task_name_env(monkeypatch):
+    from portforge_agent.upgrade.platform_restart import restart_via_windows_scheduler
+
+    monkeypatch.setenv("PORTFORGE_WINDOWS_TASK_NAME", "PortForge Agent Qual")
+    monkeypatch.delenv("PORTFORGE_WINDOWS_RESTART_HELPER", raising=False)
+    with patch("portforge_agent.subprocess_util.run_subprocess") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        restart_via_windows_scheduler()
+    cmds = [c.args[0] for c in mock_run.call_args_list]
+    assert any(cmd[-1] == "PortForge Agent Qual" for cmd in cmds if "/TN" in cmd)
+

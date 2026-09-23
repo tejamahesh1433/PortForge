@@ -17,10 +17,17 @@ from . import platform as pf
 def data_dir() -> Path:
     """The directory PortForge stores its local state in.
 
+    Override (qualification / multi-instance): PORTFORGE_DATA_DIR — absolute
+    path. Never taken from Central payloads.
+
     Windows:  %LOCALAPPDATA%\\PortForge
     macOS:    ~/Library/Application Support/PortForge
     Linux:    $XDG_DATA_HOME/portforge, else ~/.local/share/portforge
     """
+    override = os.environ.get("PORTFORGE_DATA_DIR")
+    if override:
+        return Path(override).expanduser()
+
     system = pf.detect_os()
 
     if system == pf.OperatingSystem.WINDOWS:
