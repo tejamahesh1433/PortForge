@@ -1069,6 +1069,49 @@ def _cmd_project_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _config_targets_from_manifest(manifest) -> list:
+    targets: list = []
+    if manifest.config is None:
+        return targets
+    for m in manifest.config.dotenv:
+        targets.append({"file": m.file, "type": "dotenv", "mappings": sorted(m.values.items())})
+    for m in manifest.config.compose:
+        services = {}
+        for svc_name, entries in m.services.items():
+            services[svc_name] = [
+                {"allocation": e.allocation, "container": e.container, "protocol": e.protocol} for e in entries
+            ]
+        targets.append({"file": m.file, "type": "compose", "services": services})
+    for m in manifest.config.kubernetes:
+        targets.append(
+            {
+                "file": m.file,
+                "type": "kubernetes",
+                "host_ports": [
+                    {
+                        "kind": hp.kind,
+                        "name": hp.name,
+                        "namespace": hp.namespace,
+                        "container": hp.container,
+                        "container_port": hp.container_port,
+                        "allocation": hp.allocation,
+                    }
+                    for hp in m.host_ports
+                ],
+                "node_ports": [
+                    {
+                        "name": np.name,
+                        "namespace": np.namespace,
+                        "service_port": np.service_port,
+                        "allocation": np.allocation,
+                    }
+                    for np in m.node_ports
+                ],
+            }
+        )
+    return targets
+
+
 def _cmd_project_status(args: argparse.Namespace) -> int:
     try:
         path = _project_manifest_path(args) or discover_manifest_path(walk_up=True)
@@ -1107,6 +1150,112 @@ def _cmd_project_status(args: argparse.Namespace) -> int:
         print(f"Central: {'AVAILABLE' if central_available else 'UNAVAILABLE'}")
         for row in rows:
             print(f"  {row['service']}: {row['allocation_status']} protocol={row['protocol']} port={row.get('allocated_port', '-')}")
+    return 0
+
+
+def _cmd_project_inspect(args: argparse.Namespace) -> int:
+    try:
+        path = _project_manifest_path(args) or discover_manifest_path(walk_up=True)
+        manifest = load_and_validate_manifest(path)
+    except ManifestError as exc:
+        _print_manifest_error(exc, args)
+        return 2
+
+    rows = []
+    for item in manifest.requests:
+        rows.append(
+            {
+                "service": item.name,
+                "purpose": item.purpose,
+                "protocol": item.protocol,
+                "preferred_port": item.preferred_port,
+                "requested_range": item.requested_range,
+                "allocation_status": "UNALLOCATED",
+            }
+        )
+
+    central_available = False
+    central_error = None
+    allocations = []
+    client, url_error = _allocation_client(args)
+    if not url_error:
+        result = client.list_allocations()
+        central_available = result.success
+        central_error = result.error if not result.success else None
+        if result.success:
+            allocations = result.data.get("items", []) if isinstance(result.data, dict) else (result.data or [])
+    else:
+        central_error = url_error
+
+    for allocation in allocations:
+        if allocation.get("project") != manifest.project:
+            continue
+        for entry in allocation.get("allocations", []):
+            match = next((row for row in rows if row["service"] == entry.get("name")), None)
+            if match is not None:
+                match.update(
+                    {
+                        "allocation_id": allocation.get("allocation_id"),
+                        "host": allocation.get("host"),
+                        "allocated_port": entry.get("port"),
+                        "allocation_status": allocation.get("status"),
+                    }
+                )
+
+    config_targets = _config_targets_from_manifest(manifest)
+    payload = {
+        "project": manifest.project,
+        "manifest_path": str(path.resolve()) if path else None,
+        "manifest_valid": True,
+        "host": manifest.host,
+        "central_available": central_available,
+        "central_error": central_error,
+        "services": rows,
+        "config_targets": config_targets,
+    }
+
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(f"Project: {manifest.project}")
+        print(f"Manifest: {payload['manifest_path']}")
+        print(f"Host: {manifest.host or 'unassigned'}")
+        print(f"Central: {'AVAILABLE' if central_available else 'UNAVAILABLE'}")
+        print("Services:")
+        for row in rows:
+            print(
+                f"  {row['service']}: {row['allocation_status']} "
+                f"protocol={row['protocol']} port={row.get('allocated_port', '-')}"
+            )
+        if config_targets:
+            print("Config targets:")
+            for target in config_targets:
+                print(f"  {target['type']}: {target['file']}")
+        else:
+            print("Config targets: (none declared)")
+    return 0
+
+
+def _cmd_project_provision(args: argparse.Namespace) -> int:
+    client, manifest, host, error_code = _load_manifest_and_host(args)
+    if error_code is not None:
+        return error_code
+
+    project_root = _workflow_project_root(args)
+
+    if args.dry_run:
+        result = prepare_workflow(client, manifest, host, project_root)
+        result["dry_run"] = True
+        result["committed"] = False
+        print(json.dumps(result, indent=2))
+        return 0 if result["ready"] else 1
+
+    try:
+        result = apply_workflow(client, manifest, host, project_root, args.request_id)
+    except WorkflowError as exc:
+        _print_workflow_error(exc, args)
+        return 1
+    print(json.dumps(result, indent=2))
     return 0
 
 
@@ -1224,7 +1373,12 @@ def _workflow_project_root(args):
 
 
 def _cmd_agent_contract(args):
-    print(json.dumps(build_contract(),indent=2)); return 0
+    print(json.dumps(build_contract(), indent=2))
+    return 0
+
+
+def _cmd_capabilities(args):
+    return _cmd_agent_contract(args)
 
 
 def _cmd_workflow_prepare(args):
@@ -1811,6 +1965,19 @@ def build_parser() -> argparse.ArgumentParser:
     project_status_parser = project_subparsers.add_parser("status", help="Show manifest intent and existing allocations without mutating state")
     _add_manifest_arg(project_status_parser)
     project_status_parser.set_defaults(func=_cmd_project_status)
+    project_inspect_parser = project_subparsers.add_parser(
+        "inspect", help="Read-only summary of manifest services, allocations, and config targets"
+    )
+    _add_manifest_arg(project_inspect_parser)
+    project_inspect_parser.set_defaults(func=_cmd_project_inspect)
+    project_provision_parser = project_subparsers.add_parser(
+        "provision", help="Dry-run (prepare) or apply full workflow (allocate + optional config)"
+    )
+    _add_manifest_arg(project_provision_parser)
+    project_provision_parser.add_argument("--request-id", type=str, required=True)
+    project_provision_parser.add_argument("--dry-run", action="store_true")
+    project_provision_parser.add_argument("--project-root", type=str, default=None)
+    project_provision_parser.set_defaults(func=_cmd_project_provision)
     project_init_parser = project_subparsers.add_parser("init", help="Create a conservative starter manifest without overwriting")
     project_init_parser.add_argument("--project", required=False); project_init_parser.add_argument("--host", required=False)
     project_init_parser.add_argument("--port", action="append", required=False, metavar="NAME:PURPOSE[:PROTOCOL]")
@@ -1866,7 +2033,12 @@ def build_parser() -> argparse.ArgumentParser:
     config_rollback_parser.add_argument("--project-root", type=str, default=None)
     config_rollback_parser.add_argument("--json", action="store_true")
     config_rollback_parser.set_defaults(func=_cmd_config_rollback)
-    contract_parser=subparsers.add_parser("agent-contract"); contract_parser.add_argument("--json",action="store_true"); contract_parser.set_defaults(func=_cmd_agent_contract)
+    contract_parser = subparsers.add_parser("agent-contract", help="Print the versioned machine contract (capabilities, workflow)")
+    contract_parser.add_argument("--json", action="store_true")
+    contract_parser.set_defaults(func=_cmd_agent_contract)
+    capabilities_parser = subparsers.add_parser("capabilities", help="Alias for agent-contract")
+    capabilities_parser.add_argument("--json", action="store_true")
+    capabilities_parser.set_defaults(func=_cmd_capabilities)
     workflow_parser=subparsers.add_parser("workflow"); workflow_subparsers=workflow_parser.add_subparsers(dest="workflow_command",required=True)
     workflow_prepare=workflow_subparsers.add_parser("prepare"); _add_manifest_arg(workflow_prepare); workflow_prepare.add_argument("--project-root"); workflow_prepare.set_defaults(func=_cmd_workflow_prepare)
     workflow_apply=workflow_subparsers.add_parser("apply"); _add_manifest_arg(workflow_apply); workflow_apply.add_argument("--request-id",required=True); workflow_apply.add_argument("--project-root"); workflow_apply.set_defaults(func=_cmd_workflow_apply)

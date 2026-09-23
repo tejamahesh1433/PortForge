@@ -1,0 +1,65 @@
+version: 1
+project: sample-stack
+target:
+  host: workstation
+ports:
+  frontend:
+    purpose: frontend
+    protocol: tcp
+    preferred: 3000
+  api:
+    purpose: api
+    protocol: tcp
+    preferred: 8000
+  postgres:
+    purpose: postgres
+    protocol: tcp
+    preferred: 5432
+  redis:
+    purpose: redis
+    protocol: tcp
+    preferred: 6379
+  metrics:
+    purpose: generic
+    protocol: tcp
+    preferred: 9090
+config:
+  dotenv:
+    - file: .env
+      values:
+        FRONTEND_PORT: frontend
+        API_PORT: api
+        POSTGRES_PORT: postgres
+        REDIS_PORT: redis
+        METRICS_PORT: metrics
+  compose:
+    - file: docker-compose.yml
+      services:
+        frontend:
+          ports:
+            - allocation: frontend
+              container: 3000
+        api:
+          ports:
+            - allocation: api
+              container: 8000
+        postgres:
+          ports:
+            - allocation: postgres
+              container: 5432
+        redis:
+          ports:
+            - allocation: redis
+              container: 6379
+  kubernetes:
+    - file: k8s/stack.yaml
+      hostPorts:
+        - kind: Deployment
+          name: metrics
+          container: metrics
+          containerPort: 9090
+          allocation: metrics
+      nodePorts:
+        - name: api-nodeport
+          servicePort: 8080
+          allocation: api

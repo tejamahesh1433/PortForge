@@ -24,6 +24,7 @@ def build_contract() -> dict:
         "contract_version": CONTRACT_VERSION,
         "portforge_version": get_portforge_version(),
         "protocol_version": PROTOCOL_VERSION,
+        "machine_interface": {"contract_version": CONTRACT_VERSION},
         "manifest_versions": [SUPPORTED_MANIFEST_VERSION],
         "max_ports_per_manifest": MAX_PORTS_PER_MANIFEST,
         "capabilities": {
@@ -31,6 +32,10 @@ def build_contract() -> dict:
             "validate": True,
             "plan": True,
             "allocate": True,
+            "batch_allocation": True,
+            "dry_run": True,
+            "project_inspect": True,
+            "project_provision": True,
             "config_plan": True,
             "config_apply": True,
             "config_status": True,
@@ -38,7 +43,16 @@ def build_contract() -> dict:
             "workflow_prepare": True,
             "workflow_apply": True,
             "workflow_status": True,
+            "kubernetes_hostPort": True,
+            "kubernetes_nodePort": True,
+            "kubernetes_containerPort_auto": False,
+            "kubernetes_service_port_auto": False,
+            "kubernetes_targetPort_auto": False,
+            "mcp": False,
             "doctor": True,
+        },
+        "cli_aliases": {
+            "capabilities": "agent-contract",
         },
         # Informational only -- NOT authoritative. Central's own
         # INVALID_REQUEST error at allocation time is the real source of
@@ -48,8 +62,12 @@ def build_contract() -> dict:
         "known_purposes": list(_KNOWN_PURPOSES),
         "supported_protocols": list(_SUPPORTED_PROTOCOLS),
         "recommended_workflow": [
+            "portforge capabilities --json   # discover contract (alias: agent-contract)",
             "portforge project init --project <name> --host <host> --port <name>:<purpose>[:protocol]  # only if no portforge.yml exists yet",
+            "portforge project inspect [<manifest>] --json",
             "portforge project validate [<manifest>] --json",
+            "portforge project provision [<manifest>] --request-id <stable-id> --dry-run --json",
+            "portforge project provision [<manifest>] --request-id <stable-id> --json",
             "portforge workflow prepare [<manifest>] --json",
             "portforge workflow apply [<manifest>] --request-id <stable-id> --json",
             "portforge workflow status --request-id <stable-id> --project-root <dir> --json",
