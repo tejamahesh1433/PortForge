@@ -1,6 +1,25 @@
 # Security Model
 
-PortForge v1.0.0 is designed with a trust model suitable for local development environments and private organizational networks.
+PortForge is designed with a trust model suitable for local development
+environments and private organizational networks.
+
+## Trust boundary (v1.3)
+
+The PortForge dashboard and API remain intended for:
+
+- localhost
+- trusted LAN
+- private VPN
+
+They are **not** designed for direct public-Internet exposure.
+
+There is **no browser authentication**. Anyone who can reach the dashboard can
+view fleet state and initiate dashboard workflows. Administrative BFF routes
+(Add Host enrollment mint, Remove Record) attach the admin/bootstrap credential
+**only on the dashboard server** — never via `NEXT_PUBLIC_*` and never returned
+to the browser.
+
+Do not weaken this warning for convenience deployments.
 
 ## Core Security Assumptions
 

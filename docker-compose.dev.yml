@@ -1,0 +1,85 @@
+########################################################################
+# PortForge DEVELOPMENT stack (v1.3+)
+#
+# Compose project name is FIXED to `portforge-dev` so this file can never
+# collide with the production compose project `portforge`.
+#
+# Ports (bound to loopback only):
+#   API        127.0.0.1:58001
+#   Dashboard  127.0.0.1:3001
+#   PostgreSQL 127.0.0.1:55433  (database name: disposable)
+#
+# NEVER use this file against production ports 58000 / 3000 / 55432.
+# NEVER point these services at portforge-postgres.
+#
+# Start:
+#   docker compose -p portforge-dev -f docker-compose.dev.yml --env-file .env.dev up -d
+#
+# Prefer pre-built WIP images when available; set PORTFORGE_DEV_BUILD=1 to build
+# from the current working tree into clearly tagged development images.
+########################################################################
+
+name: portforge-dev
+
+services:
+  portforge-dev-postgres:
+    image: postgres:16-alpine
+    container_name: portforge-dev-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: disposable
+      POSTGRES_USER: disposable
+      POSTGRES_PASSWORD: ${PORTFORGE_DEV_DB_PASSWORD:-disposable}
+    ports:
+      - "127.0.0.1:55433:5432"
+    volumes:
+      - portforge-dev-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U disposable -d disposable"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  portforge-dev-api:
+    image: ${PORTFORGE_DEV_API_IMAGE:-portforge-api:v1.3-phase2-wip}
+    container_name: portforge-dev-api
+    restart: unless-stopped
+    environment:
+      # Hard-wired to the disposable Postgres service above — not overridable
+      # to production hostnames via .env (fail-safe isolation).
+      PORTFORGE_DB_HOST: portforge-dev-postgres
+      PORTFORGE_DB_HOST_PORT: "5432"
+      PORTFORGE_DB_NAME: disposable
+      PORTFORGE_DB_USER: disposable
+      PORTFORGE_DB_PASSWORD: ${PORTFORGE_DEV_DB_PASSWORD:-disposable}
+      PORTFORGE_ADMIN_BOOTSTRAP_TOKEN: ${PORTFORGE_DEV_ADMIN_BOOTSTRAP_TOKEN:?set PORTFORGE_DEV_ADMIN_BOOTSTRAP_TOKEN in .env.dev}
+      PORTFORGE_CORS_ALLOWED_ORIGINS: http://127.0.0.1:3001,http://localhost:3001
+    ports:
+      - "127.0.0.1:58001:8000"
+    depends_on:
+      portforge-dev-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  portforge-dev-dashboard:
+    image: ${PORTFORGE_DEV_DASHBOARD_IMAGE:-portforge-dashboard:v1.3-phase2-wip}
+    container_name: portforge-dev-dashboard
+    restart: unless-stopped
+    environment:
+      # Browser-facing URL must be the DEV API port, never production :58000.
+      NEXT_PUBLIC_PORTFORGE_API_URL: http://127.0.0.1:58001
+      PORTFORGE_INTERNAL_API_URL: http://portforge-dev-api:8000
+      PORTFORGE_ADMIN_BOOTSTRAP_TOKEN: ${PORTFORGE_DEV_ADMIN_BOOTSTRAP_TOKEN:?set PORTFORGE_DEV_ADMIN_BOOTSTRAP_TOKEN in .env.dev}
+    ports:
+      - "127.0.0.1:3001:3000"
+    depends_on:
+      portforge-dev-api:
+        condition: service_healthy
+
+volumes:
+  portforge-dev-postgres-data:
+    name: portforge-dev-postgres-data

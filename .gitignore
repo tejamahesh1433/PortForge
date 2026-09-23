@@ -23,6 +23,7 @@ dist/
 .idea/
 .env.*
 !.env.example
+!.env.dev.example
 # OS-generated files
 .DS_Store
 Thumbs.db

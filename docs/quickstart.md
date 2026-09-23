@@ -1,85 +1,115 @@
 # Quick Start
 
-This guide will get you up and running with PortForge, demonstrating how to allocate ports safely for a new project.
+This guide gets PortForge running for a single host, then shows how agents on
+other machines must address Central.
 
-## 1. Start Central and Enroll
+## Trust boundary
 
-Assuming Central is running (via Docker Compose, on host port 58000 by default -- see
-`docs/installation.md`), enroll your host agent to begin scanning for active ports:
+PortForge Central and Dashboard are intended for:
+
+- localhost
+- trusted LAN
+- private VPN
+
+They are **not** designed for direct public-Internet exposure. The dashboard
+does not provide browser authentication. Administrative operations (Add Host,
+Remove Record) use server-side admin/bootstrap credentials. See
+`docs/security.md`.
+
+## Start Central (production-style local stack)
 
 ```bash
-# Mint an enrollment token (needs the Central host's admin bootstrap token)
-export PORTFORGE_ADMIN_BOOTSTRAP_TOKEN="your-admin-bootstrap-token"
-portforge central generate-token --url http://localhost:58000
-# Output includes: "enrollment_token": "..." -- shown once, save it
-
-# Enroll the local machine
-portforge agent enroll --server http://localhost:58000 --token "THE_TOKEN_FROM_ABOVE"
+cp .env.example .env   # set PORTFORGE_ADMIN_BOOTSTRAP_TOKEN
+docker compose up -d
 ```
 
-## 2. Trigger a Scan
+Defaults:
 
-Force the agent to report the current state of host ports:
+| Service | Address |
+|---------|---------|
+| Central API | `http://127.0.0.1:58000` |
+| Dashboard | `http://127.0.0.1:3000` |
+| PostgreSQL | `127.0.0.1:55432` |
+
+For **v1.3 feature development**, do **not** rebuild this stack. Use the
+isolated development project instead: `docs/development-isolation.md`.
+
+## Case A — Agent on the same machine as Central
+
+The agent and Central share one host. Use loopback:
+
+```bash
+portforge central generate-token --url http://127.0.0.1:58000
+portforge agent enroll --server http://127.0.0.1:58000 --token "<ENROLLMENT_TOKEN>"
+portforge agent service install
+portforge agent service start
+portforge doctor --url http://127.0.0.1:58000
+```
+
+`http://127.0.0.1:58000` means “Central on **this** machine.”
+
+## Case B — Agent on another LAN / private-network host
+
+`127.0.0.1` on the agent machine refers to **the agent’s own machine**, not the
+Central host. Another machine **cannot** enroll using the Central machine’s
+localhost address.
+
+1. On the Central host, bind the API so trusted peers can reach it (example):
+
+```bash
+PORTFORGE_API_BIND=0.0.0.0 docker compose up -d
+```
+
+2. Ensure firewall / security group allows TCP **58000** (or your configured
+   Central port) from the private network / VPN only.
+3. On the remote agent, use the Central host’s **private** address:
+
+```bash
+portforge agent enroll \
+  --server http://<CENTRAL_PRIVATE_IP>:58000 \
+  --token "<ENROLLMENT_TOKEN>"
+```
+
+Replace `<CENTRAL_PRIVATE_IP>` with the Central host’s LAN or VPN address
+(discover it with your OS network tools). Do **not** hard-code a personal IP
+into shared documentation.
+
+Connectivity checklist:
+
+- Agent can open TCP to `<CENTRAL_PRIVATE_IP>:58000`
+- Central bind address is not limited to loopback if remote agents are required
+- Path is private (LAN / VPN) — do not expose Central on the public Internet
+
+## Enroll via Dashboard (Add Host)
+
+Operators can mint enrollment tokens from the Dashboard without handing out the
+admin bootstrap secret. See `docs/runbooks/add-host.md`.
+
+## Basic scan and reservation
+
 ```bash
 portforge scan
-```
-
-## 3. Basic Reservation (Manual)
-
-If you just want to grab a port manually:
-```bash
-# Ask Central for an available port recommendation
 portforge next --purpose web --json
-# Output: {"port": 3000, ...}
-
-# Reserve it
 portforge reserve --port 3000 --purpose web --project my-app
-
-# When you're done, release it
 portforge release --port 3000 --project my-app
 ```
 
-## 4. Project Workflow (Recommended)
+## Project workflow (recommended)
 
-The most powerful way to use PortForge is via the declarative project workflow.
+```bash
+portforge project init
+portforge project validate
+portforge workflow prepare
+portforge workflow apply
+portforge workflow status
+```
 
-1. Navigate to your project directory.
-2. Initialize PortForge for the project:
-   ```bash
-   portforge project init
-   ```
-   This creates a `portforge.yml` manifest. Edit it to define the ports your project needs:
-   ```yaml
-   version: 1
-   project: my-awesome-app
-   ports:
-     frontend:
-       purpose: http
-       protocol: tcp
-     database:
-       purpose: db
-       protocol: tcp
-   ```
+## Operator runbooks
 
-3. Validate your manifest:
-   ```bash
-   portforge project validate
-   ```
-
-4. Prepare (Reserve) the ports:
-   ```bash
-   portforge workflow prepare
-   ```
-
-5. Apply (Allocate and Write Configs):
-   ```bash
-   portforge workflow apply
-   ```
-   PortForge will contact Central, lock the ports, write the assigned ports to your `.env` file (e.g., `PORT_FRONTEND=3000`, `PORT_DATABASE=5432`), and finalize the allocation in the registry.
-
-6. Check Status:
-   ```bash
-   portforge workflow status
-   ```
-
-You are now ready to run `docker compose up` or start your local dev server knowing your ports are safe from collision!
+- Add Host — `docs/runbooks/add-host.md`
+- Remove Record — `docs/runbooks/remove-record.md`
+- Re-enrollment — `docs/runbooks/re-enrollment.md`
+- Recheck status — `docs/runbooks/recheck-status.md`
+- Agent services — `docs/runbooks/agent-services.md`
+- Upgrade / rollback — `docs/runbooks/agent-upgrade.md`, `docs/runbooks/agent-rollback.md`
+- Laptop sleep — `docs/runbooks/mac-sleep.md`

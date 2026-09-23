@@ -24,46 +24,54 @@ PortForge consists of three main components:
 
 ## Installation & Quick Start
 
-### Local-Only Deployment
+See **[docs/quickstart.md](docs/quickstart.md)** for localhost vs LAN enrollment
+(Case A / Case B). Summary:
 
-To run the Central API and Dashboard on your local machine using Docker Compose:
+### Local-Only Deployment (same machine)
 
-1. Clone the repository.
-2. Ensure Docker and Docker Compose are installed.
-3. Start the central stack:
-   ```bash
-   docker compose up -d
-   ```
-   *Note: By default, the API binds to `127.0.0.1:58000`, Dashboard to `127.0.0.1:3000`, and PostgreSQL to `127.0.0.1:55432`.*
+```bash
+cp .env.example .env   # set PORTFORGE_ADMIN_BOOTSTRAP_TOKEN
+docker compose up -d
+cd agent && pip install -e .
+portforge agent enroll --server http://127.0.0.1:58000 --token "<ENROLLMENT_TOKEN>"
+portforge doctor --url http://127.0.0.1:58000
+```
 
-4. Install the Agent:
-   ```bash
-   cd agent
-   pip install -e .
-   portforge doctor
-   ```
+Defaults: API `127.0.0.1:58000`, Dashboard `127.0.0.1:3000`, PostgreSQL `127.0.0.1:55432`.
 
 ### Multi-Host / LAN Deployment
 
-To connect agents from other machines on your LAN (or VPN), you need to expose the Central API. 
-Set the bind environment variables to `0.0.0.0` before running `docker compose up`:
+Remote agents must use the Central host’s **private IP** (or VPN address), not
+`127.0.0.1` — localhost on the agent means the agent machine itself.
 
 ```bash
-PORTFORGE_API_BIND=0.0.0.0 PORTFORGE_DASHBOARD_BIND=0.0.0.0 docker compose up -d
+PORTFORGE_API_BIND=0.0.0.0 docker compose up -d
+# On the remote host:
+portforge agent enroll --server http://<CENTRAL_PRIVATE_IP>:58000 --token "<ENROLLMENT_TOKEN>"
 ```
-*Warning: Do not expose unauthenticated services directly to the public internet.*
 
-For external agents, configure the central URL via a `.env` file or environment variables to point to your Central API's LAN/VPN address.
+Allow TCP 58000 only on the trusted network. **Do not expose PortForge on the public Internet.**
+
+### v1.3 feature development
+
+Do **not** run `docker compose up --build` against the production project while
+developing. Use the isolated stack:
+
+- Project `portforge-dev` — API `:58001`, Dashboard `:3001`, DB `:55433`
+- Guide: [docs/development-isolation.md](docs/development-isolation.md)
+
+Operator runbooks (Add Host, Remove Record, services, upgrade): [docs/runbooks/](docs/runbooks/).
 
 ## Security Considerations
 
-- **Database:** PostgreSQL is always bound to `127.0.0.1` by default. Agents interact with the API, not the database directly. Do not expose the database port to the LAN unless absolutely necessary.
-- **Authentication:** The Dashboard and Central API currently do not feature browser/API authentication. They are intended for use on trusted networks (e.g., localhost, VPN, Tailscale, WireGuard).
-- See [SECURITY.md](SECURITY.md) for more details.
+- **Trust boundary:** localhost / trusted LAN / private VPN only. No browser authentication.
+- **Database:** PostgreSQL defaults to `127.0.0.1`. Agents talk to the API, not the DB.
+- **Admin secret:** Dashboard BFF routes keep `PORTFORGE_ADMIN_BOOTSTRAP_TOKEN` server-side only.
+- See [SECURITY.md](SECURITY.md) and [docs/security.md](docs/security.md).
 
 ## Development & Testing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed setup and testing instructions.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for bootstrap, tests, and the `portforge-dev` stack.
 
 ## Current Status
 

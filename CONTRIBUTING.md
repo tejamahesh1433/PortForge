@@ -57,6 +57,28 @@ cd dashboard
 npm install
 ```
 
+### Isolated development stack (v1.3+)
+
+Feature work against Central/Dashboard **must not** rebuild the production
+compose project (`portforge` on ports `58000` / `3000` / `55432`).
+
+Use the disposable project instead:
+
+```bash
+cp .env.dev.example .env.dev
+# set PORTFORGE_DEV_ADMIN_BOOTSTRAP_TOKEN
+
+docker compose -p portforge-dev -f docker-compose.dev.yml --env-file .env.dev up -d
+```
+
+| Stack | Project | API | Dashboard | Postgres |
+|-------|---------|-----|-----------|----------|
+| Production (frozen) | `portforge` | `:58000` | `:3000` | `:55432` |
+| Development | `portforge-dev` | `:58001` | `:3001` | `:55433` (DB `disposable`) |
+
+Full rules, fail-safes, and verification commands:
+`docs/development-isolation.md`.
+
 ## Running Tests
 
 Please ensure tests pass before submitting changes. Activate the same venv
