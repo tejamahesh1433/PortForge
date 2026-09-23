@@ -76,6 +76,61 @@ export async function deleteHost(hostId: string, signal?: AbortSignal): Promise<
   );
 }
 
+/** Decommission host via dashboard BFF (admin secret stays server-side). */
+export async function decommissionHost(
+  hostId: string,
+  body?: { reason?: string },
+  signal?: AbortSignal,
+): Promise<HostOut> {
+  let response: Response;
+  try {
+    response = await fetch(`/api/hosts/${encodeURIComponent(hostId)}/decommission`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(body ?? {}),
+      signal,
+    });
+  } catch (cause) {
+    throw new PortForgeConnectionError(cause);
+  }
+
+  const responseBody = (await response.json().catch(() => null)) as { detail?: unknown } | null;
+  if (!response.ok) {
+    const detail = typeof responseBody?.detail === "string" ? responseBody.detail : null;
+    throw new PortForgeApiError(
+      response.status,
+      detail,
+      detail ?? `Failed to decommission host (${response.status})`,
+    );
+  }
+  return responseBody as HostOut;
+}
+
+/** Reactivate host via dashboard BFF (admin secret stays server-side). */
+export async function reactivateHost(hostId: string, signal?: AbortSignal): Promise<HostOut> {
+  let response: Response;
+  try {
+    response = await fetch(`/api/hosts/${encodeURIComponent(hostId)}/reactivate`, {
+      method: "POST",
+      headers: { Accept: "application/json" },
+      signal,
+    });
+  } catch (cause) {
+    throw new PortForgeConnectionError(cause);
+  }
+
+  const responseBody = (await response.json().catch(() => null)) as { detail?: unknown } | null;
+  if (!response.ok) {
+    const detail = typeof responseBody?.detail === "string" ? responseBody.detail : null;
+    throw new PortForgeApiError(
+      response.status,
+      detail,
+      detail ?? `Failed to reactivate host (${response.status})`,
+    );
+  }
+  return responseBody as HostOut;
+}
+
 /** GET /api/hosts/{host_id}/ports */
 export function getHostPorts(
   hostId: string,

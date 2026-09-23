@@ -61,6 +61,14 @@ const healthyHost: HostOut = {
   age_seconds: 30,
 };
 
+const decommissionedHost: HostOut = {
+  ...healthyHost,
+  health_state: "OFFLINE",
+  age_seconds: 900,
+  last_seen: new Date(Date.now() - 900_000).toISOString(),
+  lifecycle_state: "DECOMMISSIONED",
+};
+
 function renderDialog(host: HostOut = healthyHost) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -169,6 +177,31 @@ describe("RemoveHostDialog", () => {
       );
       expect(push).toHaveBeenCalledWith("/hosts");
     });
+  });
+
+  it("shows tombstone warning when host is DECOMMISSIONED", async () => {
+    const user = userEvent.setup();
+    renderDialog(decommissionedHost);
+
+    await user.click(screen.getByRole("button", { name: /^remove record$/i }));
+
+    expect(
+      screen.getByText(/Removing this record also removes the decommission tombstone/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/A machine with this UUID may be enrolled again later/i),
+    ).toBeInTheDocument();
+  });
+
+  it("does NOT show tombstone warning for an ACTIVE host", async () => {
+    const user = userEvent.setup();
+    renderDialog(healthyHost);
+
+    await user.click(screen.getByRole("button", { name: /^remove record$/i }));
+
+    expect(
+      screen.queryByText(/Removing this record also removes the decommission tombstone/i),
+    ).not.toBeInTheDocument();
   });
 
   it("failure stays on page and shows an error without navigating", async () => {

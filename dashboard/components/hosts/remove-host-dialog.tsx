@@ -107,6 +107,16 @@ export function RemoveHostDialog({ host }: { host: HostOut }) {
               later, re-enroll the machine with a new enrollment token.
             </div>
 
+            {host.lifecycle_state === "DECOMMISSIONED" ? (
+              <div
+                role="status"
+                className="rounded-lg border border-zinc-500/30 bg-zinc-500/10 p-3 text-zinc-300"
+              >
+                Removing this record also removes the decommission tombstone. A machine with this
+                UUID may be enrolled again later.
+              </div>
+            ) : null}
+
             {appearsRunning ? (
               <div
                 role="status"

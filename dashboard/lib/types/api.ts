@@ -71,6 +71,13 @@ export interface HostOut {
   // never treat it as a permanent verdict.
   protocol_version?: number | null;
   protocol_compatibility?: "compatible" | "warning" | "unknown";
+
+  // Phase 8: host decommission lifecycle.
+  // Missing lifecycle_state is treated as ACTIVE for back-compat with older
+  // Central versions that do not yet emit this field.
+  lifecycle_state?: "ACTIVE" | "DECOMMISSIONED";
+  decommissioned_at?: string | null;
+  decommission_reason?: string | null;
 }
 
 export interface HostDiagnosticsOut {

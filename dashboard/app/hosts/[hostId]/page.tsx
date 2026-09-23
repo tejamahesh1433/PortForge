@@ -20,6 +20,9 @@ import { FreshnessWarning } from "@/components/status/freshness-warning";
 import { CompatibilityCard, ProbeCapabilityCard } from "@/components/status/host-compatibility-card";
 import { CheckAgainButton } from "@/components/hosts/check-again-button";
 import { RemoveHostDialog } from "@/components/hosts/remove-host-dialog";
+import { DecommissionHostDialog } from "@/components/hosts/decommission-host-dialog";
+import { ReactivateHostDialog } from "@/components/hosts/reactivate-host-dialog";
+import { LifecycleBadge } from "@/components/status/lifecycle-badge";
 import { getHostHealthState } from "@/lib/utils/host-health";
 
 function DetailRow({ label, value }: { label: string; value: string }) {
@@ -78,11 +81,20 @@ export default function HostDetailPage() {
             <span className="flex items-center gap-1.5 font-mono text-xs border border-border px-1.5 py-0.5 rounded-md">Agent: {data.agent_version ?? "—"}</span>
             <span className="flex items-center gap-1.5"><HostStatus host={data} /></span>
             <span className="flex items-center gap-1.5"><DockerStatus available={data.docker_available} /></span>
+            <LifecycleBadge state={data.lifecycle_state} />
           </div>
         }
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            {needsRetry ? <CheckAgainButton hostId={data.id} hostname={data.hostname} /> : null}
+            {/* Recheck: status check only -- does not alter lifecycle state */}
+            {needsRetry && data.lifecycle_state !== "DECOMMISSIONED" ? (
+              <CheckAgainButton hostId={data.id} hostname={data.hostname} />
+            ) : null}
+            {data.lifecycle_state === "DECOMMISSIONED" ? (
+              <ReactivateHostDialog host={data} />
+            ) : (
+              <DecommissionHostDialog host={data} />
+            )}
             <RemoveHostDialog host={data} />
           </div>
         }
@@ -150,6 +162,17 @@ export default function HostDetailPage() {
                 <DetailRow label="First seen" value={formatAbsoluteTime(data.first_seen)} />
                 <DetailRow label="Last seen" value={formatAbsoluteTime(data.last_seen)} />
                 <DetailRow label="Reported status" value={data.status} />
+                {data.lifecycle_state === "DECOMMISSIONED" && (
+                  <>
+                    <DetailRow
+                      label="Decommissioned at"
+                      value={data.decommissioned_at ? formatAbsoluteTime(data.decommissioned_at) : "—"}
+                    />
+                    {data.decommission_reason ? (
+                      <DetailRow label="Decommission reason" value={data.decommission_reason} />
+                    ) : null}
+                  </>
+                )}
               </CardContent>
             </Card>
           </div>

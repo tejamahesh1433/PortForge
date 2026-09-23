@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { CheckAgainButton } from "@/components/hosts/check-again-button";
 import { DockerStatus } from "@/components/status/docker-status";
 import { HostStatus } from "@/components/status/host-status";
+import { LifecycleBadge } from "@/components/status/lifecycle-badge";
 import { formatAbsoluteTime, formatRelativeTime, formatFriendlyOS } from "@/lib/utils/format";
 import { getHostHealthState } from "@/lib/utils/host-health";
 import type { HostOut } from "@/lib/types/api";
@@ -42,8 +43,12 @@ export function HostCard({ host }: { host: HostOut }) {
           </div>
         </CardHeader>
         <CardContent className="space-y-2">
-          <HostStatus host={host} />
-          {needsRetry ? (
+          {host.lifecycle_state === "DECOMMISSIONED" ? (
+            <LifecycleBadge state="DECOMMISSIONED" />
+          ) : (
+            <HostStatus host={host} />
+          )}
+          {needsRetry && host.lifecycle_state !== "DECOMMISSIONED" ? (
             <CheckAgainButton
               hostId={host.id}
               hostname={host.hostname}
@@ -52,6 +57,7 @@ export function HostCard({ host }: { host: HostOut }) {
               className="w-full"
             />
           ) : null}
+
           <div className="flex flex-wrap items-center gap-2">
             <DockerStatus available={host.docker_available} />
             {host.architecture && (
