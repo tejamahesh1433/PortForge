@@ -18,6 +18,7 @@ from pydantic import Field, field_validator
 
 from .common import ApiModel
 from .probe import PendingProbeOut
+from .upgrade import PendingUpgradeOut as PendingUpgradeOut  # noqa: F401 (re-exported)
 
 _MAX_STR = 4096
 _MAX_SHORT_STR = 255
@@ -36,6 +37,9 @@ class EnrollmentRequest(ApiModel):
     # handled as "unknown" compatibility, never rejected. NOT persisted
     # anywhere (no Host column) -- see services/compatibility_service.py.
     protocol_version: Optional[int] = Field(default=None, ge=1)
+    # Phase 9: additive, optional fleet intelligence fields
+    contract_version: Optional[int] = Field(default=None, ge=1)
+    python_version: Optional[str] = Field(default=None, max_length=64)
 
 
 class EnrollmentResponse(ApiModel):
@@ -56,6 +60,9 @@ class HeartbeatRequest(ApiModel):
     docker_available: bool = False
     timestamp: datetime
     protocol_version: Optional[int] = Field(default=None, ge=1)
+    # Phase 9: additive, optional fleet intelligence fields
+    contract_version: Optional[int] = Field(default=None, ge=1)
+    python_version: Optional[str] = Field(default=None, max_length=64)
 
 
 class HeartbeatResponse(ApiModel):
@@ -67,6 +74,9 @@ class HeartbeatResponse(ApiModel):
     # simply never acts on it -- the probe(s) just expire unclaimed (see
     # docs/v1.1/remote-probe-design.md "Offline/stale host interaction").
     pending_probes: List[PendingProbeOut] = []
+    # Phase 10: additive. A legacy agent that doesn't read this field simply
+    # never acts on it -- the upgrade just stays APPROVED/WAITING_FOR_AGENT.
+    pending_upgrade: Optional[PendingUpgradeOut] = None
 
 
 class ObservationIn(ApiModel):

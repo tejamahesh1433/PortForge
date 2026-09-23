@@ -12,6 +12,7 @@ from .api import (
     agents,
     allocations,
     conflicts,
+    fleet,
     health,
     hosts,
     ports,
@@ -19,6 +20,7 @@ from .api import (
     recommendations,
     reservations,
 )
+from .api.upgrades import host_upgrades_router, upgrades_router
 from .config import get_settings
 from .services.allocation_service import AllocationError
 
@@ -66,6 +68,9 @@ def create_app() -> FastAPI:
     app.include_router(agents.router, prefix="/api")
     app.include_router(activity.router, prefix="/api")
     app.include_router(allocations.router, prefix="/api")
+    app.include_router(fleet.router, prefix="/api")
+    app.include_router(host_upgrades_router, prefix="/api")
+    app.include_router(upgrades_router, prefix="/api")
 
     # Phase 8A: allocation errors are machine-readable for coding-agent
     # consumers (see docs/phase8a_agent_allocation.md "Error contract") --

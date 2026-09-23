@@ -68,6 +68,17 @@ class Settings(BaseSettings):
     host_stale_after_seconds: int = 120
     host_offline_after_seconds: int = 300
 
+    # --- Agent upgrade management (Phase 10) ---------------------------------
+    # When configured, Central knows the "blessed" target artifact for
+    # update_availability computation and upgrade validation. All four
+    # values must agree for a given version -- Central rejects any upgrade
+    # request that names the target version but supplies different artifact
+    # coordinates.
+    update_target_version: str | None = None
+    update_artifact_url: str | None = None
+    update_artifact_sha256: str | None = None
+    update_artifact_filename: str | None = None
+
     # --- Remote bind probe (v1.1-B) ------------------------------------------
     # See docs/v1.1/remote-probe-design.md. A probe result is only trusted as
     # fresh evidence within this window after being queued -- past it, it's

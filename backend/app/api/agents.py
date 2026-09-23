@@ -9,6 +9,7 @@ host's credential can never be used to write another host's data.
 """
 from __future__ import annotations
 
+import uuid
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -21,10 +22,12 @@ from ..schemas.agent import (
     EnrollmentResponse,
     HeartbeatRequest,
     HeartbeatResponse,
+    PendingUpgradeOut,
     SnapshotResult,
     SnapshotSubmission,
 )
 from ..schemas.probe import PendingProbeOut, ProbeResultIn, ProbeResultOut
+from ..schemas.upgrade import UpgradeOut, UpgradeStatusUpdate
 from ..security.auth import AuthenticatedAgent, require_admin, require_agent
 from ..services import compatibility_service, enrollment_service, host_service, ingestion_service, probe_service
 
@@ -65,6 +68,8 @@ def enroll(payload: EnrollmentRequest, db: Session = Depends(get_db)) -> Enrollm
             agent_version=payload.agent_version,
             docker_available=payload.docker_available,
             protocol_version=payload.protocol_version,
+            contract_version=payload.contract_version,
+            python_version=payload.python_version,
         )
     except enrollment_service.HostDecommissionedError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
@@ -98,6 +103,8 @@ def heartbeat(
             docker_available=payload.docker_available,
             timestamp=payload.timestamp,
             protocol_version=payload.protocol_version,
+            contract_version=payload.contract_version,
+            python_version=payload.python_version,
         )
     except ValueError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(exc)) from exc
@@ -113,12 +120,27 @@ def heartbeat(
         for p in delivered
     ]
 
+    # Phase 10: deliver pending upgrade (APPROVED or WAITING_FOR_AGENT)
+    from ..repositories.upgrade_repository import UpgradeRepository
+    pending_upgrade_row = UpgradeRepository(db).get_pending_for_host(agent.host_id)
+    pending_upgrade_out = None
+    if pending_upgrade_row is not None:
+        pending_upgrade_out = PendingUpgradeOut(
+            id=pending_upgrade_row.id,
+            target_version=pending_upgrade_row.target_version,
+            artifact_url=pending_upgrade_row.artifact_url,
+            artifact_sha256=pending_upgrade_row.artifact_sha256,
+            artifact_filename=pending_upgrade_row.artifact_filename,
+            state=pending_upgrade_row.state,
+        )
+
     return HeartbeatResponse(
         host_id=host.id,
         last_seen=host.last_seen,
         status=host.status,
         protocol_compatibility=compatibility,
         pending_probes=pending_probes,
+        pending_upgrade=pending_upgrade_out,
     )
 
 
@@ -185,3 +207,38 @@ def submit_observations(
         disappeared=result.disappeared,
         duplicates_merged=result.duplicates_merged,
     )
+
+
+@router.post("/upgrades/{upgrade_id}/status", response_model=UpgradeOut)
+def report_upgrade_status(
+    upgrade_id: uuid.UUID,
+    payload: UpgradeStatusUpdate,
+    agent: AuthenticatedAgent = Depends(require_agent),
+    db: Session = Depends(get_db),
+) -> UpgradeOut:
+    """Agent-only: report progress or result for an owned upgrade.
+
+    The bearer token proves which host this is -- the agent cannot update
+    another host's upgrade.
+    """
+    from ..services import upgrade_service
+
+    try:
+        upgrade = upgrade_service.update_upgrade_status(
+            db,
+            host_id=agent.host_id,
+            upgrade_id=upgrade_id,
+            new_state=payload.state,
+            failure_reason=payload.failure_reason,
+            reported_version=payload.reported_version,
+        )
+    except upgrade_service.UpgradeNotFoundError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+    except upgrade_service.UpgradeOwnershipError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+    except upgrade_service.UpgradeError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+
+    db.commit()
+    db.refresh(upgrade)
+    return UpgradeOut.model_validate(upgrade)

@@ -58,11 +58,19 @@ class Host(Base, TimestampMixin):
     # so an old, delayed submission can be rejected deterministically.
     last_scan_observed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Phase 9: fleet intelligence fields (all nullable; populated from agent reports)
+    contract_version: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    python_version: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    last_error: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+
     port_observations: Mapped[list["CurrentPortObservation"]] = relationship(
         back_populates="host", cascade="all, delete-orphan"
     )
     reservations: Mapped[list["CentralReservation"]] = relationship(
         back_populates="host", cascade="all, delete-orphan"
+    )
+    upgrades: Mapped[list["HostUpgrade"]] = relationship(
+        "HostUpgrade", back_populates="host", cascade="all, delete-orphan"
     )
 
     __table_args__ = (

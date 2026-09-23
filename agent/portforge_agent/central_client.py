@@ -107,6 +107,8 @@ class CentralClient:
         agent_version: Optional[str],
         docker_available: bool,
         protocol_version: Optional[int] = None,
+        contract_version: Optional[int] = None,
+        python_version: Optional[str] = None,
     ) -> CentralResult:
         body = {
             "enrollment_token": enrollment_token,
@@ -123,6 +125,11 @@ class CentralClient:
         # still validates identically. See docs/v1.1/version-compatibility.md.
         if protocol_version is not None:
             body["protocol_version"] = protocol_version
+        # Phase 9/10: fleet inventory fields -- additive, omitted when absent.
+        if contract_version is not None:
+            body["contract_version"] = contract_version
+        if python_version is not None:
+            body["python_version"] = python_version
         return self._request("POST", "/api/agent/enroll", body=body, authenticated=False)
 
     def heartbeat(
@@ -136,6 +143,8 @@ class CentralClient:
         docker_available: bool,
         timestamp: str,
         protocol_version: Optional[int] = None,
+        contract_version: Optional[int] = None,
+        python_version: Optional[str] = None,
     ) -> CentralResult:
         body = {
             "host_id": host_id,
@@ -149,6 +158,11 @@ class CentralClient:
         }
         if protocol_version is not None:
             body["protocol_version"] = protocol_version
+        # Phase 9/10: fleet inventory fields -- additive, omitted when absent.
+        if contract_version is not None:
+            body["contract_version"] = contract_version
+        if python_version is not None:
+            body["python_version"] = python_version
         return self._request("POST", "/api/agent/heartbeat", body=body)
 
     def submit_observations(
@@ -212,6 +226,30 @@ class CentralClient:
         
     def list_allocations(self) -> CentralResult:
         return self._request("GET", "/api/allocations?limit=100", authenticated=False)
+
+    # --- Phase 10: agent upgrade status reporting ----------------------------
+    # Agent credential required -- see backend/app/api/agents.py
+    # POST /api/agent/upgrades/{upgrade_id}/status
+
+    def report_upgrade_status(
+        self,
+        upgrade_id: str,
+        state: str,
+        failure_reason: Optional[str] = None,
+        reported_version: Optional[str] = None,
+    ) -> CentralResult:
+        """Report a status transition for an in-progress upgrade.
+
+        Called at each phase: DOWNLOADING, VERIFYING, INSTALLING, RESTARTING,
+        and FAILED (with failure_reason). The new process after restart reports
+        SUCCEEDED via heartbeat (Central infers it from the matching version).
+        """
+        body: Dict[str, Any] = {"state": state}
+        if failure_reason is not None:
+            body["failure_reason"] = failure_reason
+        if reported_version is not None:
+            body["reported_version"] = reported_version
+        return self._request("POST", f"/api/agent/upgrades/{upgrade_id}/status", body=body)
 
     def list_hosts(self, limit: int = 500) -> CentralResult:
         return self._request("GET", f"/api/hosts?limit={limit}", authenticated=False)

@@ -96,6 +96,8 @@ def enroll_host(
     agent_version: Optional[str],
     docker_available: bool,
     protocol_version: Optional[int] = None,
+    contract_version: Optional[int] = None,
+    python_version: Optional[str] = None,
 ) -> EnrollmentResult:
     agent_repo = AgentRepository(db)
     host_repo = HostRepository(db)
@@ -125,6 +127,8 @@ def enroll_host(
         docker_available=docker_available,
         now=now,
         protocol_version=protocol_version,
+        contract_version=contract_version,
+        python_version=python_version,
     )
 
     raw_agent_token = generate_token()

@@ -47,6 +47,8 @@ class HostRepository:
         docker_available: bool,
         now: datetime,
         protocol_version: Optional[int] = None,
+        contract_version: Optional[int] = None,
+        python_version: Optional[str] = None,
     ) -> Host:
         host = self.get(host_id)
         if host is None:
@@ -62,6 +64,8 @@ class HostRepository:
                 last_seen=now,
                 status="online",
                 protocol_version=protocol_version,
+                contract_version=contract_version,
+                python_version=python_version,
             )
             self.db.add(host)
         else:
@@ -79,6 +83,10 @@ class HostRepository:
             # actually reported this time.
             if protocol_version is not None:
                 host.protocol_version = protocol_version
+            if contract_version is not None:
+                host.contract_version = contract_version
+            if python_version is not None:
+                host.python_version = python_version
 
         self.db.flush()
         return host
@@ -113,6 +121,7 @@ class HostRepository:
         from ..models.host_probe import HostProbe
         from ..models.allocation import Allocation
         from ..models.activity import ActivityEvent
+        from ..models.host_upgrade import HostUpgrade
 
         host = self.get(host_id)
         if host is None:
@@ -135,6 +144,7 @@ class HostRepository:
         self.db.execute(delete(HostProbe).where(HostProbe.host_id == host_id))
         self.db.execute(delete(Allocation).where(Allocation.host_id == host_id))
         self.db.execute(delete(ActivityEvent).where(ActivityEvent.host_id == host_id))
+        self.db.execute(delete(HostUpgrade).where(HostUpgrade.host_id == host_id))
 
         self.db.delete(host)
         self.db.flush()

@@ -29,6 +29,8 @@ def record_heartbeat(
     docker_available: bool,
     timestamp: datetime,
     protocol_version: Optional[int] = None,
+    contract_version: Optional[int] = None,
+    python_version: Optional[str] = None,
 ) -> Host:
     repo = HostRepository(db)
     existing_host = repo.get(host_id)
@@ -56,6 +58,8 @@ def record_heartbeat(
         docker_available=docker_available,
         now=timestamp,
         protocol_version=protocol_version,
+        contract_version=contract_version,
+        python_version=python_version,
     )
 
     if was_offline:

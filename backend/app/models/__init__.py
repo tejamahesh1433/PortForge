@@ -16,6 +16,7 @@ from .allocation import Allocation
 from .base import Base
 from .host import Host
 from .host_probe import HostProbe
+from .host_upgrade import HostUpgrade
 from .port_observation import CurrentPortObservation, PortObservationEvent
 from .reservation import CentralReservation
 from .scan import Scan
@@ -33,4 +34,5 @@ __all__ = [
     "ActivityEvent",
     "Allocation",
     "HostProbe",
+    "HostUpgrade",
 ]

@@ -7,6 +7,7 @@ from typing import Optional
 from pydantic import Field
 
 from .common import ApiModel
+from .upgrade import UpgradeSummary
 
 
 class HostOut(ApiModel):
@@ -57,3 +58,48 @@ class HostDiagnosticsOut(ApiModel):
     # asked" and "legacy agent" -- Central cannot honestly distinguish the
     # two from data alone (see docs/v1.1/v1.1-d-data-audit.md).
     probe_capability: str = "unknown"
+
+
+class FleetHostOut(ApiModel):
+    """Fleet-intelligence view of a host (Phase 9/10).
+
+    Extends HostOut fields with derived update_availability, Phase 9
+    columns, and a compact active_upgrade summary.
+    """
+
+    id: uuid.UUID
+    hostname: str
+    display_name: Optional[str]
+    operating_system: str
+    os_version: Optional[str]
+    architecture: Optional[str]
+    agent_version: Optional[str]
+    docker_available: bool
+    first_seen: datetime
+    status: str
+
+    # Health
+    health_state: str = "HEALTHY"
+    health_reason: str = "AGENT_HEALTHY"
+    age_seconds: int = 0
+
+    # Protocol
+    protocol_version: Optional[int] = None
+    protocol_compatibility: str = "unknown"
+
+    # Lifecycle
+    lifecycle_state: str = "ACTIVE"
+    decommissioned_at: Optional[datetime] = None
+    decommission_reason: Optional[str] = None
+
+    # Fleet intelligence (Phase 9)
+    last_heartbeat: datetime
+    last_sync: Optional[datetime] = None
+    update_availability: str = "UNKNOWN"
+    target_version: Optional[str] = None
+    contract_version: Optional[int] = None
+    python_version: Optional[str] = None
+    last_error: Optional[str] = None
+
+    # Upgrade state (Phase 10) — absent when no active upgrade
+    active_upgrade: Optional[UpgradeSummary] = None

@@ -106,6 +106,10 @@ def decommission_host(
     AgentRepository(db).revoke_active_credential_for_host(host_id, revoked_at=now)
     _release_active_allocations_flush_only(db, host_id, now)
 
+    # Cancel any in-flight upgrade for this host (Phase 10)
+    from ..services.upgrade_service import fail_active_upgrades_for_host
+    fail_active_upgrades_for_host(db, host_id, "host_decommissioned", now)
+
     summary = f"Host '{host.hostname}' decommissioned"
     if cleaned_reason:
         summary = f"{summary}: {cleaned_reason[:200]}"
