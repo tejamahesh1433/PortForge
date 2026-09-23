@@ -11,49 +11,73 @@ PortForge consists of three primary components:
 
 ### Python Requirements
 - **Python:** 3.12 or 3.13 is recommended.
-- **Package Manager:** `uv` is heavily recommended for managing virtual environments and dependencies.
-- **Installation:**
-  ```bash
-  # Agent
-  cd agent
-  uv venv
-  # on Linux/Mac: source .venv/bin/activate
-  # on Windows: .venv\Scripts\activate
-  uv pip install -e .[dev]
+- A virtual environment is required for clean development (stdlib `venv` or `uv`).
 
-  # Backend
-  cd backend
-  uv venv
-  # activate as above
-  uv pip install -r requirements.txt
-  ```
+### Canonical monorepo bootstrap (repository root)
 
-### Node Requirements
+Backend source imports the agent package (`portforge_agent`) — see
+`backend/app/models/base.py`. Installing `backend/requirements-dev.txt` alone is
+**not** sufficient: that file lists only backend third-party/test dependencies.
+
+From the **repository root** (the directory containing `agent/` and `backend/`):
+
+```bash
+python -m venv .venv
+# Linux/macOS:
+source .venv/bin/activate
+# Windows:
+#   .venv\Scripts\activate
+
+python scripts/bootstrap_dev.py
+```
+
+That single bootstrap command installs:
+
+1. `./agent` into the active environment (non-editable — preferred for clean
+   validation)
+2. `backend/requirements-dev.txt` (pytest, httpx, and backend runtime deps)
+
+For day-to-day agent editing you may instead use:
+
+```bash
+python scripts/bootstrap_dev.py --editable
+```
+
+Do **not** rely on a sibling-path entry such as `-e ../agent` inside
+`backend/requirements-dev.txt`. That form is intentionally absent so installs
+do not depend on how pip resolves relative paths from different CWDs.
+
+### Dashboard (Node)
+
 - **Node.js:** v20+ recommended.
 - **Package Manager:** `npm`.
-- **Installation:**
-  ```bash
-  cd dashboard
-  npm install
-  ```
+
+```bash
+cd dashboard
+npm install
+```
 
 ## Running Tests
 
-Please ensure tests pass before submitting changes.
-
-### Agent
-```bash
-cd agent
-python -m pytest
-```
+Please ensure tests pass before submitting changes. Activate the same venv
+created above first.
 
 ### Backend
+
 ```bash
 cd backend
 python -m pytest
 ```
 
+### Agent
+
+```bash
+cd agent
+python -m pytest
+```
+
 ### Dashboard
+
 ```bash
 cd dashboard
 npm run test
@@ -62,6 +86,7 @@ npm run test
 ## Linting, Typechecking, and Building
 
 For the frontend dashboard:
+
 ```bash
 cd dashboard
 npm run lint
