@@ -4,6 +4,8 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
+from pydantic import Field
+
 from .common import ApiModel
 
 
@@ -34,6 +36,15 @@ class HostOut(ApiModel):
     # stored verdict.
     protocol_version: Optional[int] = None
     protocol_compatibility: str = "unknown"
+
+    # Phase 8: operator lifecycle (independent of health_state).
+    lifecycle_state: str = "ACTIVE"
+    decommissioned_at: Optional[datetime] = None
+    decommission_reason: Optional[str] = None
+
+
+class HostDecommissionRequest(ApiModel):
+    reason: Optional[str] = Field(default=None, max_length=1024)
 
 
 class HostDiagnosticsOut(ApiModel):

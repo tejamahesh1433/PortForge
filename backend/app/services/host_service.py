@@ -35,6 +35,8 @@ def record_heartbeat(
     
     was_offline = True
     if existing_host is not None:
+        if (existing_host.lifecycle_state or "ACTIVE") == "DECOMMISSIONED":
+            raise ValueError("Host identity is decommissioned.")
         settings = get_settings()
         prev_state, _, _ = derive_health_state(
             existing_host.last_seen,

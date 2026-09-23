@@ -66,6 +66,8 @@ def enroll(payload: EnrollmentRequest, db: Session = Depends(get_db)) -> Enrollm
             docker_available=payload.docker_available,
             protocol_version=payload.protocol_version,
         )
+    except enrollment_service.HostDecommissionedError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     except enrollment_service.EnrollmentError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(exc)) from exc
 
@@ -84,18 +86,21 @@ def heartbeat(
     if payload.host_id != agent.host_id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "host_id does not match the authenticated agent credential.")
 
-    host = host_service.record_heartbeat(
-        db,
-        host_id=agent.host_id,
-        hostname=payload.hostname,
-        operating_system=payload.operating_system,
-        os_version=payload.os_version,
-        architecture=payload.architecture,
-        agent_version=payload.agent_version,
-        docker_available=payload.docker_available,
-        timestamp=payload.timestamp,
-        protocol_version=payload.protocol_version,
-    )
+    try:
+        host = host_service.record_heartbeat(
+            db,
+            host_id=agent.host_id,
+            hostname=payload.hostname,
+            operating_system=payload.operating_system,
+            os_version=payload.os_version,
+            architecture=payload.architecture,
+            agent_version=payload.agent_version,
+            docker_available=payload.docker_available,
+            timestamp=payload.timestamp,
+            protocol_version=payload.protocol_version,
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(exc)) from exc
     compatibility = compatibility_service.evaluate_protocol_compatibility(payload.protocol_version)
 
     # v1.1-B: deliver any pending remote bind-probe requests on this same

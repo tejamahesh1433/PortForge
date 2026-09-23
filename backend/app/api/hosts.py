@@ -15,9 +15,10 @@ from datetime import datetime, timezone
 from ..config import get_settings
 from ..models.host import Host
 from ..schemas.health_status import derive_health_state
-from ..schemas.host import HostOut, HostDiagnosticsOut
+from ..schemas.host import HostOut, HostDiagnosticsOut, HostDecommissionRequest
 from ..security.auth import require_admin
 from ..services import compatibility_service
+from ..services import host_lifecycle_service
 
 router = APIRouter(prefix="/hosts", tags=["hosts"])
 
@@ -53,6 +54,9 @@ def _build_host_out(host: Host) -> HostOut:
         snapshot_age_seconds=snapshot_age,
         protocol_version=host.protocol_version,
         protocol_compatibility=compatibility_service.evaluate_protocol_compatibility(host.protocol_version),
+        lifecycle_state=getattr(host, "lifecycle_state", None) or "ACTIVE",
+        decommissioned_at=getattr(host, "decommissioned_at", None),
+        decommission_reason=getattr(host, "decommission_reason", None),
     )
 
 @router.get("", response_model=Page[HostOut])
@@ -148,4 +152,74 @@ def remove_host_record(host_id: uuid.UUID, db: Session = Depends(get_db)) -> Non
         raise HTTPException(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
             "Failed to remove host record.",
+        ) from None
+
+
+@router.post(
+    "/{host_id}/decommission",
+    response_model=HostOut,
+    dependencies=[Depends(require_admin)],
+    summary="Decommission Host",
+)
+def decommission_host(
+    host_id: uuid.UUID,
+    payload: HostDecommissionRequest | None = None,
+    db: Session = Depends(get_db),
+) -> HostOut:
+    """Retire a host identity as a Central tombstone.
+
+    Distinct from Remove Record: the host row is retained, credentials are
+    revoked, and ordinary same-UUID enrollment is rejected until Reactivate.
+    The remote agent process is not contacted or stopped.
+    """
+    body = payload or HostDecommissionRequest()
+    try:
+        host = host_lifecycle_service.decommission_host(
+            db, host_id, reason=body.reason
+        )
+        db.commit()
+        db.refresh(host)
+        return _build_host_out(host)
+    except host_lifecycle_service.HostLifecycleError as exc:
+        db.rollback()
+        raise HTTPException(exc.status_code, str(exc)) from exc
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "Failed to decommission host.",
+        ) from None
+
+
+@router.post(
+    "/{host_id}/reactivate",
+    response_model=HostOut,
+    dependencies=[Depends(require_admin)],
+    summary="Reactivate Host",
+)
+def reactivate_host(host_id: uuid.UUID, db: Session = Depends(get_db)) -> HostOut:
+    """Clear DECOMMISSIONED tombstone markers.
+
+    Does not issue an agent credential. Operator must mint an enrollment
+    token and enroll explicitly after reactivation.
+    """
+    try:
+        host = host_lifecycle_service.reactivate_host(db, host_id)
+        db.commit()
+        db.refresh(host)
+        return _build_host_out(host)
+    except host_lifecycle_service.HostLifecycleError as exc:
+        db.rollback()
+        raise HTTPException(exc.status_code, str(exc)) from exc
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "Failed to reactivate host.",
         ) from None

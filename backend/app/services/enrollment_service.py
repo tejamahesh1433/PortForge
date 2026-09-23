@@ -55,6 +55,13 @@ class EnrollmentTokenConsumedError(EnrollmentError):
     pass
 
 
+class HostDecommissionedError(EnrollmentError):
+    """Same-UUID enroll rejected because Central holds a DECOMMISSIONED tombstone."""
+
+    def __init__(self, message: str = "Host identity is decommissioned."):
+        super().__init__(message)
+
+
 @dataclass(frozen=True)
 class MintedEnrollmentToken:
     raw_token: str  # returned exactly once -- never persisted or logged in raw form
@@ -102,6 +109,11 @@ def enroll_host(
         raise EnrollmentTokenConsumedError("Enrollment token has already been used.")
     if token.expires_at is not None and token.expires_at < now:
         raise EnrollmentTokenExpiredError("Enrollment token has expired.")
+
+    existing = host_repo.get(host_id)
+    if existing is not None and (existing.lifecycle_state or "ACTIVE") == "DECOMMISSIONED":
+        # Do not consume the enrollment token; operator must Reactivate first.
+        raise HostDecommissionedError("Host identity is decommissioned.")
 
     host_repo.upsert(
         host_id=host_id,

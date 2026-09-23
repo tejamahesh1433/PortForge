@@ -50,6 +50,18 @@ class AgentRepository:
         )
         return self.db.execute(stmt).scalar_one_or_none()
 
+    def revoke_active_credential_for_host(self, host_id: uuid.UUID, revoked_at: datetime) -> bool:
+        """Revoke the active credential for a host without issuing a replacement.
+
+        Used by Decommission. Returns True if a credential was revoked.
+        """
+        existing = self.get_active_credential_for_host(host_id)
+        if existing is None:
+            return False
+        existing.revoked_at = revoked_at
+        self.db.flush()
+        return True
+
     def replace_credential_for_host(
         self, host_id: uuid.UUID, token_hash: str, created_at: datetime
     ) -> AgentCredential:

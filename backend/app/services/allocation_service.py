@@ -124,6 +124,13 @@ def _ensure_host_allocatable(host) -> AllocationValidationOut:
     reality, which is exactly the state allocation's atomicity guarantee
     depends on being trustworthy.
     """
+    if (getattr(host, "lifecycle_state", None) or "ACTIVE") == "DECOMMISSIONED":
+        raise AllocationError(
+            code="HOST_DECOMMISSIONED",
+            message=f"Host '{host.hostname}' is decommissioned -- refusing to allocate.",
+            status_code=409,
+            details=[{"host_id": str(host.id), "lifecycle_state": "DECOMMISSIONED"}],
+        )
     validation = _build_validation(host)
     if validation.host_health_state != HostHealthState.HEALTHY.value:
         code = "HOST_OFFLINE" if validation.host_health_state == HostHealthState.OFFLINE.value else "HOST_STALE"

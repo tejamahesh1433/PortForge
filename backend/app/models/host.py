@@ -47,6 +47,12 @@ class Host(Base, TimestampMixin):
     last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(32), default="online")
 
+    # Phase 8: operator lifecycle, independent of health/last_seen.
+    # ACTIVE | DECOMMISSIONED — plain string like Allocation.status.
+    lifecycle_state: Mapped[str] = mapped_column(String(32), default="ACTIVE", server_default="ACTIVE")
+    decommissioned_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    decommission_reason: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+
     # Staleness protection for snapshot ingestion (see services/ingestion_service.py
     # and Scan model) -- the most recent *accepted* scan's own observed_at,
     # so an old, delayed submission can be rejected deterministically.
@@ -59,4 +65,7 @@ class Host(Base, TimestampMixin):
         back_populates="host", cascade="all, delete-orphan"
     )
 
-    __table_args__ = (Index("ix_hosts_hostname", "hostname"),)
+    __table_args__ = (
+        Index("ix_hosts_hostname", "hostname"),
+        Index("ix_hosts_lifecycle_state", "lifecycle_state"),
+    )
