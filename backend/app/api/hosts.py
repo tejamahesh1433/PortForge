@@ -16,6 +16,7 @@ from ..config import get_settings
 from ..models.host import Host
 from ..schemas.health_status import derive_health_state
 from ..schemas.host import HostOut, HostDiagnosticsOut
+from ..security.auth import require_admin
 from ..services import compatibility_service
 
 router = APIRouter(prefix="/hosts", tags=["hosts"])
@@ -114,3 +115,37 @@ def get_host_ports(host_id: uuid.UUID, db: Session = Depends(get_db)) -> list[Po
     port_repo = PortRepository(db)
     rows = port_repo.list_current_for_host(host_id)
     return [PortObservationOut.from_observation(row, hostname=host.hostname) for row in rows]
+
+@router.delete(
+    "/{host_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+    dependencies=[Depends(require_admin)],
+    summary="Remove Record",
+)
+def remove_host_record(host_id: uuid.UUID, db: Session = Depends(get_db)) -> None:
+    """Administratively purge a Central host *record*.
+
+    This is Remove Record — not remote stop, not permanent decommission, and
+    not an uninstall. The still-running agent (if any) is not contacted; its
+    next heartbeat/sync fails authentication because the credential row is
+    deleted. Re-enrollment with a new enrollment token may recreate the same
+    host UUID (agent-local identity) as a fresh enrollment.
+
+    Requires the admin bootstrap bearer token (`require_admin`).
+    """
+    repo = HostRepository(db)
+    try:
+        if not repo.delete(host_id):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Host not found.")
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        # Map unexpected purge failures to 500 without leaking internals.
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "Failed to remove host record.",
+        ) from None

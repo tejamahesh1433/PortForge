@@ -82,3 +82,60 @@ class HostRepository:
 
         self.db.flush()
         return host
+
+    def delete(self, host_id: uuid.UUID) -> bool:
+        """Remove Record: hard-purge Central rows for ``host_id``.
+
+        Dependency map (every model with a host FK / host reference in
+        ``app.models``):
+
+        - ``EnrollmentToken.consumed_by_host_id`` — nullable, no FK; nulled
+        - ``PortObservationEvent.host_id`` → hosts.id
+        - ``CurrentPortObservation.host_id`` → hosts.id
+        - ``CentralReservation.host_id`` → hosts.id
+          (also optional ``allocation_id`` → allocations.id ON DELETE SET NULL;
+          reservations are deleted before allocations)
+        - ``AgentCredential.host_id`` → hosts.id
+        - ``Scan.host_id`` → hosts.id
+        - ``HostProbe.host_id`` → hosts.id
+        - ``Allocation.host_id`` → hosts.id
+        - ``ActivityEvent.host_id`` → hosts.id
+
+        Caller must ``commit()`` (or roll back) the surrounding Session.
+        This method only ``flush()``es so a failed request can roll back the
+        whole purge atomically.
+        """
+        from sqlalchemy import delete, update
+        from ..models.port_observation import CurrentPortObservation, PortObservationEvent
+        from ..models.reservation import CentralReservation
+        from ..models.agent_credential import AgentCredential, EnrollmentToken
+        from ..models.scan import Scan
+        from ..models.host_probe import HostProbe
+        from ..models.allocation import Allocation
+        from ..models.activity import ActivityEvent
+
+        host = self.get(host_id)
+        if host is None:
+            return False
+
+        # Nullable back-reference (no FK) — clear before host row goes away.
+        self.db.execute(
+            update(EnrollmentToken)
+            .where(EnrollmentToken.consumed_by_host_id == host_id)
+            .values(consumed_by_host_id=None)
+        )
+
+        # Explicit dependent deletes (Host ORM cascades are incomplete for
+        # credentials/allocations/probes/activity/scans).
+        self.db.execute(delete(PortObservationEvent).where(PortObservationEvent.host_id == host_id))
+        self.db.execute(delete(CurrentPortObservation).where(CurrentPortObservation.host_id == host_id))
+        self.db.execute(delete(CentralReservation).where(CentralReservation.host_id == host_id))
+        self.db.execute(delete(AgentCredential).where(AgentCredential.host_id == host_id))
+        self.db.execute(delete(Scan).where(Scan.host_id == host_id))
+        self.db.execute(delete(HostProbe).where(HostProbe.host_id == host_id))
+        self.db.execute(delete(Allocation).where(Allocation.host_id == host_id))
+        self.db.execute(delete(ActivityEvent).where(ActivityEvent.host_id == host_id))
+
+        self.db.delete(host)
+        self.db.flush()
+        return True
