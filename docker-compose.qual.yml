@@ -1,0 +1,91 @@
+########################################################################
+# PortForge QUALIFICATION stack (Phase 14 — disposable, isolated)
+#
+# Compose project name is FIXED to `portforge-qual` so this file can never
+# collide with production (`portforge`) or development (`portforge-dev`).
+#
+# Ports (bound to loopback only):
+#   API        127.0.0.1:58003
+#   Dashboard  127.0.0.1:3003
+#   PostgreSQL 127.0.0.1:55434  (database name: qual)
+#
+# NEVER use this file against:
+#   production  58000 / 3000 / 55432
+#   portforge-dev 58001 / 3001 / 55433
+#   smoke stacks 58002 / 3002
+#
+# Start:
+#   docker compose -p portforge-qual -f docker-compose.qual.yml --env-file .env.qual up -d --build
+#
+# See docs/qualification/full-system-qualification.md
+########################################################################
+
+name: portforge-qual
+
+services:
+  portforge-qual-postgres:
+    image: postgres:16-alpine
+    container_name: portforge-qual-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: qual
+      POSTGRES_USER: qual
+      POSTGRES_PASSWORD: ${PORTFORGE_QUAL_DB_PASSWORD:-qual}
+    ports:
+      - "127.0.0.1:55434:5432"
+    volumes:
+      - portforge-qual-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qual -d qual"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  portforge-qual-api:
+    image: ${PORTFORGE_QUAL_API_IMAGE:-portforge-api:qual}
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: portforge-qual-api
+    restart: unless-stopped
+    environment:
+      # Hard-wired to the qualification Postgres service — not overridable
+      # to production or dev hostnames via .env (fail-safe isolation).
+      PORTFORGE_DB_HOST: portforge-qual-postgres
+      PORTFORGE_DB_HOST_PORT: "5432"
+      PORTFORGE_DB_NAME: qual
+      PORTFORGE_DB_USER: qual
+      PORTFORGE_DB_PASSWORD: ${PORTFORGE_QUAL_DB_PASSWORD:-qual}
+      PORTFORGE_ADMIN_BOOTSTRAP_TOKEN: ${PORTFORGE_QUAL_ADMIN_BOOTSTRAP_TOKEN:?set PORTFORGE_QUAL_ADMIN_BOOTSTRAP_TOKEN in .env.qual}
+      PORTFORGE_CORS_ALLOWED_ORIGINS: http://127.0.0.1:3003,http://localhost:3003
+    ports:
+      - "127.0.0.1:58003:8000"
+    depends_on:
+      portforge-qual-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  portforge-qual-dashboard:
+    image: ${PORTFORGE_QUAL_DASHBOARD_IMAGE:-portforge-dashboard:qual}
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: portforge-qual-dashboard
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_PORTFORGE_API_URL: http://127.0.0.1:58003
+      PORTFORGE_INTERNAL_API_URL: http://portforge-qual-api:8000
+      PORTFORGE_ADMIN_BOOTSTRAP_TOKEN: ${PORTFORGE_QUAL_ADMIN_BOOTSTRAP_TOKEN:?set PORTFORGE_QUAL_ADMIN_BOOTSTRAP_TOKEN in .env.qual}
+    ports:
+      - "127.0.0.1:3003:3000"
+    depends_on:
+      portforge-qual-api:
+        condition: service_healthy
+
+volumes:
+  portforge-qual-postgres-data:
+    name: portforge-qual-postgres-data

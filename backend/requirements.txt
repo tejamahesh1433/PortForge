@@ -26,6 +26,8 @@ mako==1.4.1
     # via alembic
 markupsafe==3.0.3
     # via mako
+packaging==25.0
+    # via portforge-backend (pyproject.toml)
 psycopg==3.3.6
     # via portforge-backend (pyproject.toml)
 psycopg-binary==3.3.6

@@ -24,6 +24,7 @@ dist/
 .env.*
 !.env.example
 !.env.dev.example
+!.env.qual.example
 # OS-generated files
 .DS_Store
 Thumbs.db
