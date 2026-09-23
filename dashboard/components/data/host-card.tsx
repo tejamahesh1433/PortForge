@@ -3,9 +3,11 @@
 import Link from "next/link";
 import { Cpu, Server } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { CheckAgainButton } from "@/components/hosts/check-again-button";
 import { DockerStatus } from "@/components/status/docker-status";
 import { HostStatus } from "@/components/status/host-status";
 import { formatAbsoluteTime, formatRelativeTime, formatFriendlyOS } from "@/lib/utils/format";
+import { getHostHealthState } from "@/lib/utils/host-health";
 import type { HostOut } from "@/lib/types/api";
 
 /** One enrolled host, summarized for the Overview grid / Hosts inventory.
@@ -14,6 +16,9 @@ import type { HostOut } from "@/lib/types/api";
  * it's keyboard/screen-reader reachable for free.
  */
 export function HostCard({ host }: { host: HostOut }) {
+  const health = getHostHealthState(host);
+  const needsRetry = health === "STALE" || health === "OFFLINE";
+
   return (
     <Link
       href={`/hosts/${host.id}`}
@@ -27,7 +32,7 @@ export function HostCard({ host }: { host: HostOut }) {
             </span>
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold text-foreground">{host.hostname}</p>
-              <p 
+              <p
                 className="truncate text-xs text-muted-foreground"
                 title={`${host.operating_system}${host.os_version ? ` · ${host.os_version}` : ""}`}
               >
@@ -38,6 +43,15 @@ export function HostCard({ host }: { host: HostOut }) {
         </CardHeader>
         <CardContent className="space-y-2">
           <HostStatus host={host} />
+          {needsRetry ? (
+            <CheckAgainButton
+              hostId={host.id}
+              hostname={host.hostname}
+              stopPropagation
+              size="sm"
+              className="w-full"
+            />
+          ) : null}
           <div className="flex flex-wrap items-center gap-2">
             <DockerStatus available={host.docker_available} />
             {host.architecture && (
@@ -51,7 +65,10 @@ export function HostCard({ host }: { host: HostOut }) {
             <dt>Agent</dt>
             <dd className="truncate text-right font-medium text-foreground">{host.agent_version ?? "—"}</dd>
             <dt>Last seen</dt>
-            <dd className="truncate text-right font-medium text-foreground" title={formatAbsoluteTime(host.last_seen)}>
+            <dd
+              className="truncate text-right font-medium text-foreground"
+              title={formatAbsoluteTime(host.last_seen)}
+            >
               {formatRelativeTime(host.last_seen)}
             </dd>
           </dl>

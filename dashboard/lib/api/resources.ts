@@ -1,4 +1,4 @@
-import { portforgeFetch } from "./client";
+import { portforgeFetch, PortForgeApiError, PortForgeConnectionError } from "./client";
 import type {
   AllocationOut,
   CentralRecommendationOut,
@@ -48,6 +48,32 @@ export function listHosts(
 /** GET /api/hosts/{host_id} */
 export function getHost(hostId: string, signal?: AbortSignal): Promise<HostOut> {
   return portforgeFetch<HostOut>(`/api/hosts/${hostId}`, { signal });
+}
+
+/** Remove Record via dashboard BFF (admin secret stays server-side). */
+export async function deleteHost(hostId: string, signal?: AbortSignal): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(`/api/hosts/${encodeURIComponent(hostId)}`, {
+      method: "DELETE",
+      headers: { Accept: "application/json" },
+      signal,
+    });
+  } catch (cause) {
+    throw new PortForgeConnectionError(cause);
+  }
+
+  if (response.status === 204) {
+    return;
+  }
+
+  const body = (await response.json().catch(() => null)) as { detail?: unknown } | null;
+  const detail = typeof body?.detail === "string" ? body.detail : null;
+  throw new PortForgeApiError(
+    response.status,
+    detail,
+    detail ?? `Failed to remove host (${response.status})`,
+  );
 }
 
 /** GET /api/hosts/{host_id}/ports */

@@ -8,6 +8,7 @@ import { MetricCard } from "@/components/data/metric-card";
 import { ActivityFeed } from "@/components/activity/activity-feed";
 import { ErrorState } from "@/components/feedback/error-state";
 import { LoadingState } from "@/components/feedback/loading-state";
+import { CheckFleetAgainButton } from "@/components/hosts/check-again-button";
 import { PageHeader } from "@/components/layout/page-header";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { useAllocations } from "@/hooks/use-allocations";
@@ -110,6 +111,7 @@ export default function OverviewPage() {
             ? `Central v${health.data.version} — database ${health.data.database}.`
             : "Fleet-wide summary across every enrolled host."
         }
+        actions={staleCount + offlineCount > 0 ? <CheckFleetAgainButton /> : null}
       />
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-6">

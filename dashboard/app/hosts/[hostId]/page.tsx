@@ -18,6 +18,9 @@ import { useHost, useHostPorts, useHostDiagnostics } from "@/hooks/use-hosts";
 import { formatAbsoluteTime } from "@/lib/utils/format";
 import { FreshnessWarning } from "@/components/status/freshness-warning";
 import { CompatibilityCard, ProbeCapabilityCard } from "@/components/status/host-compatibility-card";
+import { CheckAgainButton } from "@/components/hosts/check-again-button";
+import { RemoveHostDialog } from "@/components/hosts/remove-host-dialog";
+import { getHostHealthState } from "@/lib/utils/host-health";
 
 function DetailRow({ label, value }: { label: string; value: string }) {
   return (
@@ -58,6 +61,8 @@ export default function HostDetailPage() {
   }
 
   const data = host.data!;
+  const health = getHostHealthState(data);
+  const needsRetry = health === "STALE" || health === "OFFLINE";
 
   return (
     <div>
@@ -73,6 +78,12 @@ export default function HostDetailPage() {
             <span className="flex items-center gap-1.5 font-mono text-xs border border-border px-1.5 py-0.5 rounded-md">Agent: {data.agent_version ?? "—"}</span>
             <span className="flex items-center gap-1.5"><HostStatus host={data} /></span>
             <span className="flex items-center gap-1.5"><DockerStatus available={data.docker_available} /></span>
+          </div>
+        }
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            {needsRetry ? <CheckAgainButton hostId={data.id} hostname={data.hostname} /> : null}
+            <RemoveHostDialog host={data} />
           </div>
         }
       />

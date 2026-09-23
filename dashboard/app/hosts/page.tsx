@@ -11,6 +11,8 @@ import { SearchInput } from "@/components/controls/search-input";
 import { ErrorState } from "@/components/feedback/error-state";
 import { LoadingState } from "@/components/feedback/loading-state";
 import { PageHeader } from "@/components/layout/page-header";
+import { AddHostDialog } from "@/components/hosts/add-host-dialog";
+import { CheckFleetAgainButton } from "@/components/hosts/check-again-button";
 import { useHosts } from "@/hooks/use-hosts";
 import { getHostHealthState } from "@/lib/utils/host-health";
 
@@ -72,9 +74,23 @@ function HostsPageContent() {
     setDockerFilter("all");
   };
 
+  const unhealthyCount = useMemo(
+    () => (hosts.data?.items ?? []).filter((h) => getHostHealthState(h) !== "HEALTHY").length,
+    [hosts.data],
+  );
+
   return (
     <div>
-      <PageHeader title="Hosts" description="Every machine currently enrolled with Central." />
+      <PageHeader
+        title="Hosts"
+        description="Every machine currently enrolled with Central."
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            {unhealthyCount > 0 ? <CheckFleetAgainButton /> : null}
+            <AddHostDialog />
+          </div>
+        }
+      />
 
       <FilterBar>
         <SearchInput value={search} onChange={setSearch} placeholder="Search hostname…" className="w-56" />
@@ -115,7 +131,11 @@ function HostsPageContent() {
         <ErrorState error={hosts.error} onRetry={() => void hosts.refetch()} />
       ) : (
         <>
-          <HostGrid hosts={filtered} filtered={search !== "" || osFilter !== "all" || statusFilter !== "all" || dockerFilter !== "all"} />
+          <HostGrid
+            hosts={filtered}
+            filtered={search !== "" || osFilter !== "all" || statusFilter !== "all" || dockerFilter !== "all"}
+            emptyAction={<AddHostDialog variant="outline" triggerLabel="Add your first host" />}
+          />
           {hosts.data && (
             <PaginationBar
               total={hosts.data.total}

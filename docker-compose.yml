@@ -1,20 +1,19 @@
 ########################################################################
-# PortForge central development stack (Phase 5).
+# PortForge PRODUCTION / default local stack (compose project: portforge).
 #
-# Central server is entirely optional -- the local `portforge` CLI never
-# depends on this being up. This exists to run the central registry
-# locally during development.
+# Default ports: API 58000, Dashboard 3000, PostgreSQL 55432.
 #
-# Host ports are NEVER hardcoded to a bare guess: both default to
-# deliberately uncommon values (55432 for Postgres, 58000 for the API --
-# verified free on the development machine with `portforge check`, and
-# reserved locally with `portforge reserve ... --project portforge-backend`
-# before this file existed) and are fully overridable via environment
-# variables, per the project brief. Pick your own if these ever collide:
+# WARNING (v1.3+): Do NOT use `docker compose up --build` on this file for
+# feature WIP. That previously replaced frozen production with development
+# images. For v1.3 development use:
+#
+#   docker compose -p portforge-dev -f docker-compose.dev.yml --env-file .env.dev up -d
+#
+# See docs/development-isolation.md.
+#
+# Host ports default to deliberately uncommon values and remain overridable:
 #
 #   PORTFORGE_DB_HOST_PORT=55432 PORTFORGE_API_HOST_PORT=58000 docker compose up
-#
-# No frontend service yet -- that's a later phase.
 ########################################################################
 
 services:
@@ -70,6 +69,8 @@ services:
       # This tells the dashboard where to find the API from the browser
       - NEXT_PUBLIC_PORTFORGE_API_URL=http://localhost:${PORTFORGE_API_HOST_PORT:-58000}
       - PORTFORGE_INTERNAL_API_URL=http://portforge-api:8000
+      # Server-only: Add host + Remove record BFFs (never NEXT_PUBLIC)
+      - PORTFORGE_ADMIN_BOOTSTRAP_TOKEN=${PORTFORGE_ADMIN_BOOTSTRAP_TOKEN:?set PORTFORGE_ADMIN_BOOTSTRAP_TOKEN before starting}
     ports:
       - "${PORTFORGE_DASHBOARD_BIND:-127.0.0.1}:${PORTFORGE_DASHBOARD_HOST_PORT:-3000}:3000"
     depends_on:

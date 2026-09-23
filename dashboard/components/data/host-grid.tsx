@@ -1,4 +1,5 @@
 import { Server } from "lucide-react";
+import type { ReactNode } from "react";
 import { EmptyState } from "@/components/feedback/empty-state";
 import type { HostOut } from "@/lib/types/api";
 import { HostCard } from "./host-card";
@@ -10,7 +11,15 @@ import { HostCard } from "./host-card";
  * inventory down to zero matches), a distinct message that doesn't
  * misleadingly imply Central has no hosts at all.
  */
-export function HostGrid({ hosts, filtered = false }: { hosts: HostOut[]; filtered?: boolean }) {
+export function HostGrid({
+  hosts,
+  filtered = false,
+  emptyAction,
+}: {
+  hosts: HostOut[];
+  filtered?: boolean;
+  emptyAction?: ReactNode;
+}) {
   if (hosts.length === 0) {
     return filtered ? (
       <EmptyState
@@ -22,7 +31,8 @@ export function HostGrid({ hosts, filtered = false }: { hosts: HostOut[]; filter
       <EmptyState
         icon={Server}
         title="No hosts enrolled yet"
-        description="Once a PortForge agent enrolls with Central, it will appear here."
+        description="Generate an enrollment token, run it on the new machine, and the host will appear here."
+        action={emptyAction}
       />
     );
   }

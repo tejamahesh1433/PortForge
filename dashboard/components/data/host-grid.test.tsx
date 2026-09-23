@@ -27,6 +27,14 @@ describe("HostGrid empty states", () => {
   it("shows the genuinely-empty message when Central has zero hosts (filtered=false)", () => {
     render(<HostGrid hosts={[]} />);
     expect(screen.getByText("No hosts enrolled yet")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Generate an enrollment token/i),
+    ).toBeInTheDocument();
+  });
+
+  it("renders an empty-state action when provided", () => {
+    render(<HostGrid hosts={[]} emptyAction={<button type="button">Add your first host</button>} />);
+    expect(screen.getByRole("button", { name: /add your first host/i })).toBeInTheDocument();
   });
 
   it("shows a distinct filtered-to-zero message instead of implying Central has no hosts, when filtered=true", () => {
