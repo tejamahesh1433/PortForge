@@ -136,48 +136,58 @@ untouched.
 
 ## Results
 
-Filled during qualification. Leave as TBD until evidence is collected.
+Filled during Phase 14 qualification run (2026-09-23). Evidence classes noted inline.
 
 ### Automated regression
 
 | Suite | Result | Commit / run | Notes |
 |-------|--------|--------------|-------|
-| Backend pytest | TBD | | |
-| Agent pytest | TBD | | |
-| Dashboard tests | TBD | | |
-| Lint / typecheck / build | TBD | | |
+| Backend pytest | **355 PASS** | `qualification/full-system` | INTEGRATION |
+| Agent pytest | **762 PASS / 3 skipped** | same | UNIT/INTEGRATION |
+| Dashboard tests | **168 PASS** | same | UNIT |
+| Lint / typecheck / build | **PASS** | same | 0 lint errors (1 pre-existing warning) |
+| Doctor (prod URL, RO) | **PASS** | PRODUCTION READ-ONLY | host count unchanged on qual when pointed at qual |
 
 ### Disposable stack (portforge-qual)
 
 | Check | Result | Notes |
 |-------|--------|-------|
-| Stack start / health | TBD | |
-| Central diagnostics | TBD | |
-| Agent enroll + heartbeat | TBD | |
-| Allocation E2E | TBD | |
-| Project workflow E2E | TBD | |
-| Dashboard visibility | TBD | |
-| Postgres restart persistence | TBD | |
-| Coding-agent contract CLI | TBD | |
+| Fresh Postgres + full alembic chain | **PASS** | DISPOSABLE REAL — DB `qual` on `:55434` |
+| Central health | **PASS** | Host uvicorn on `:58004` after Docker API image failed (`packaging` missing — fixed in `9fedcfb`; Docker Hub DNS blocked no-cache rebuild) |
+| Dashboard container | **NOT RUN** | Image built once; font build flaky on rebuild; API workaround used |
+| Lifecycle / fleet / allocation E2E | **PASS** | `scripts/qual_phase14_e2e.py` — 31/31 checks |
+| Populated migration roundtrip | **PASS** | seed host+alloc+reservation; downgrade `-1` / upgrade `head`; data preserved |
+| Central restart | **PASS** | fleet total preserved |
+| Postgres restart | **PASS** | health recovered `connected` |
+| Coding-agent capabilities JSON | **PASS** | `python -m portforge_agent capabilities --json` |
+| Project inspect (sample-stack) | **PASS** | DISPOSABLE REAL CLI |
+| Compose runtime launch | **NOT RUN** | Fixture validated; stack not launched with assigned ports |
+| Physical multi-OS upgrade | **NOT RUN** | See platform table — release-blocking for upgrade claims |
+
+### Defect fixed during qualification
+
+| Severity | Defect | Fix |
+|----------|--------|-----|
+| **HIGH** | `ModuleNotFoundError: packaging` on Central Docker start (fleet version compare) | Declared `packaging>=23` in `backend/pyproject.toml` + `requirements.txt` (`9fedcfb`) |
 
 ### Platform results
 
 | Platform | Agent install | Discovery | Upgrade / rollback | Result | Notes |
 |----------|---------------|-----------|-------------------|--------|-------|
-| Windows | TBD | TBD | TBD | TBD | |
-| Linux | TBD | TBD | TBD | TBD | |
-| macOS | TBD | TBD | TBD | TBD | |
+| Windows | Disposable enroll API **PASS** | Local doctor/collector **PASS** | Physical upgrade **NOT RUN** | **NOT PHYSICALLY QUALIFIED** (upgrade) | Enroll/heartbeat to qual Central only |
+| Linux | **NOT RUN** (no disposable host) | — | **NOT RUN** | **NOT PHYSICALLY QUALIFIED** | Production Linux agents not mutated |
+| macOS | **NOT RUN** (no disposable host) | — | **NOT RUN** | **NOT PHYSICALLY QUALIFIED** | Production Mac agent not mutated |
 
 ### Production read-only (optional observation)
 
 | Check | Result | Notes |
 |-------|--------|-------|
-| Frozen stack unchanged | TBD | No `--build`, no writes |
-| Port collision with qual | TBD | All three stacks may coexist |
+| Frozen stack unchanged | **PASS** | Central/Dashboard `ghcr.io/...:v1.3.0`; 4/4 agents 1.3.0; identities 4; duplicates 0 |
+| Port collision with qual | **PASS** | Qual used `:55434` / host API `:58004`; production `:58000/:3000/:55432` untouched |
 
 ## Sign-off
 
 | Role | Name | Date | SHA qualified |
 |------|------|------|---------------|
-| Operator | TBD | | |
+| Operator | Phase 14 harness | 2026-09-23 | `9fedcfb` (11–13 freeze `46d3887` + packaging fix) |
 | Reviewer | TBD | | |
