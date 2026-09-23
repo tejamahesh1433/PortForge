@@ -3,6 +3,8 @@ import type {
   AllocationOut,
   CentralRecommendationOut,
   ConflictOut,
+  CreateUpgradeIn,
+  FleetHostOut,
   GetRecommendationParams,
   HealthOut,
   GlobalDiagnosticsOut,
@@ -10,6 +12,7 @@ import type {
   HostOut,
   ListAllocationsParams,
   ListConflictsParams,
+  ListFleetParams,
   ListHostsParams,
   ListPortsParams,
   ListReservationsParams,
@@ -20,6 +23,7 @@ import type {
   ReservationOut,
   DashboardReservationIn,
   AllocationIn,
+  UpgradeOut,
 } from "@/lib/types/api";
 
 /** GET /api/health */
@@ -239,4 +243,92 @@ export function getRecommendation(
   signal?: AbortSignal,
 ): Promise<CentralRecommendationOut> {
   return portforgeFetch<CentralRecommendationOut>("/api/recommendations", { params, signal });
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9/10: Fleet + Upgrade APIs
+// ---------------------------------------------------------------------------
+
+/** GET /api/fleet -- fleet-intelligence view (read-open like /api/hosts). */
+export function listFleet(
+  params: ListFleetParams = {},
+  signal?: AbortSignal,
+): Promise<Page<FleetHostOut>> {
+  return portforgeFetch<Page<FleetHostOut>>("/api/fleet", { params, signal });
+}
+
+/** GET /api/fleet/{host_id} -- single fleet host detail. */
+export function getFleetHost(hostId: string, signal?: AbortSignal): Promise<FleetHostOut> {
+  return portforgeFetch<FleetHostOut>(`/api/fleet/${hostId}`, { signal });
+}
+
+/**
+ * POST /api/hosts/{hostId}/upgrades (admin) -- goes through the dashboard
+ * BFF so the admin token never leaves the server.
+ */
+export async function createHostUpgrade(
+  hostId: string,
+  payload: CreateUpgradeIn,
+  signal?: AbortSignal,
+): Promise<UpgradeOut> {
+  let response: Response;
+  try {
+    response = await fetch(`/api/hosts/${encodeURIComponent(hostId)}/upgrades`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(payload),
+      signal,
+    });
+  } catch (cause) {
+    throw new PortForgeConnectionError(cause);
+  }
+
+  const body = (await response.json().catch(() => null)) as { detail?: unknown } | null;
+  if (!response.ok) {
+    const detail = typeof body?.detail === "string" ? body.detail : null;
+    throw new PortForgeApiError(
+      response.status,
+      detail,
+      detail ?? `Failed to create upgrade (${response.status})`,
+    );
+  }
+  return body as UpgradeOut;
+}
+
+/** GET /api/hosts/{hostId}/upgrades -- list upgrades for a host. */
+export function listHostUpgrades(hostId: string, signal?: AbortSignal): Promise<UpgradeOut[]> {
+  return portforgeFetch<UpgradeOut[]>(`/api/hosts/${hostId}/upgrades`, { signal });
+}
+
+/** GET /api/upgrades/{id} -- single upgrade detail. */
+export function getUpgrade(upgradeId: string, signal?: AbortSignal): Promise<UpgradeOut> {
+  return portforgeFetch<UpgradeOut>(`/api/upgrades/${upgradeId}`, { signal });
+}
+
+/**
+ * POST /api/upgrades/{id}/rollback (admin) -- goes through the dashboard
+ * BFF so the admin token never leaves the server.
+ */
+export async function rollbackUpgrade(upgradeId: string, signal?: AbortSignal): Promise<UpgradeOut> {
+  let response: Response;
+  try {
+    response = await fetch(`/api/upgrades/${encodeURIComponent(upgradeId)}/rollback`, {
+      method: "POST",
+      headers: { Accept: "application/json" },
+      signal,
+    });
+  } catch (cause) {
+    throw new PortForgeConnectionError(cause);
+  }
+
+  const body = (await response.json().catch(() => null)) as { detail?: unknown } | null;
+  if (!response.ok) {
+    const detail = typeof body?.detail === "string" ? body.detail : null;
+    throw new PortForgeApiError(
+      response.status,
+      detail,
+      detail ?? `Failed to rollback upgrade (${response.status})`,
+    );
+  }
+  return body as UpgradeOut;
 }

@@ -9,6 +9,7 @@ import {
   Server,
   Settings,
   Activity,
+  ShieldCheck,
   type LucideIcon,
 } from "lucide-react";
 
@@ -32,6 +33,7 @@ export interface NavGroup {
 export const NAV_MAIN_ITEMS: NavItem[] = [
   { href: "/", label: "Overview", icon: Gauge, description: "Fleet-wide summary" },
   { href: "/hosts", label: "Hosts", icon: Server, description: "Enrolled machines" },
+  { href: "/fleet", label: "Fleet", icon: ShieldCheck, description: "Agent versions & upgrades" },
   { href: "/ports", label: "Ports", icon: Network, description: "Every known binding" },
   { href: "/projects", label: "Projects", icon: Folder, description: "Grouped by project" },
   { href: "/reservations", label: "Reservations", icon: Lock, description: "Claimed ports" },
@@ -49,9 +51,9 @@ export const NAV_MAIN_ITEMS: NavItem[] = [
 
 export const NAV_GROUPS: NavGroup[] = [
   { items: NAV_MAIN_ITEMS.slice(0, 1) },
-  { label: "Infrastructure", items: NAV_MAIN_ITEMS.slice(1, 4) },
-  { label: "Operations", items: NAV_MAIN_ITEMS.slice(4, 8) },
-  { label: "Observability", items: NAV_MAIN_ITEMS.slice(8, 10) },
+  { label: "Infrastructure", items: NAV_MAIN_ITEMS.slice(1, 5) },
+  { label: "Operations", items: NAV_MAIN_ITEMS.slice(5, 9) },
+  { label: "Observability", items: NAV_MAIN_ITEMS.slice(9, 11) },
 ];
 
 export const NAV_FOOTER_ITEMS: NavItem[] = [

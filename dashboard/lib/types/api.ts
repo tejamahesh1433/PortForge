@@ -399,3 +399,124 @@ export interface ListActivityParams {
   limit?: number;
   offset?: number;
 }
+
+// ---------------------------------------------------------------------------
+// Phase 9/10: Fleet intelligence + agent upgrade management
+// backend/app/schemas/fleet.py + backend/app/schemas/upgrade.py
+// ---------------------------------------------------------------------------
+
+/**
+ * backend/app/schemas/fleet.py:UpdateAvailability
+ *
+ * CURRENT: agent_version == configured target
+ * UPDATE_AVAILABLE: agent_version < target (semantic semver comparison)
+ * UNSUPPORTED: agent_version > target (unexpected downgrade not offered)
+ * UNKNOWN: no target configured, missing agent_version, or unparseable version
+ */
+export type UpdateAvailability = "CURRENT" | "UPDATE_AVAILABLE" | "UNSUPPORTED" | "UNKNOWN";
+
+/**
+ * backend/app/schemas/upgrade.py:UpgradeState
+ *
+ * Terminal states: SUCCEEDED, FAILED, ROLLED_BACK
+ * Non-terminal: all others
+ */
+export type UpgradeState =
+  | "APPROVED"
+  | "WAITING_FOR_AGENT"
+  | "DOWNLOADING"
+  | "VERIFYING"
+  | "INSTALLING"
+  | "RESTARTING"
+  | "VERIFYING_HEALTH"
+  | "SUCCEEDED"
+  | "FAILED"
+  | "ROLLED_BACK";
+
+/** Minimal upgrade summary embedded in FleetHostOut.active_upgrade */
+export interface ActiveUpgradeSummary {
+  id: string;
+  state: UpgradeState;
+  target_version: string;
+}
+
+/**
+ * backend/app/schemas/fleet.py:FleetHostOut
+ *
+ * Extends host facts with fleet-specific fields.
+ */
+export interface FleetHostOut {
+  id: string;
+  hostname: string;
+  display_name: string | null;
+  operating_system: string;
+  os_version: string | null;
+  architecture: string | null;
+  agent_version: string | null;
+  docker_available: boolean;
+  first_seen: string;
+  last_seen: string;
+  status: string;
+
+  health_state?: "HEALTHY" | "STALE" | "OFFLINE" | "DEGRADED";
+  health_reason?: string;
+  age_seconds?: number;
+
+  lifecycle_state?: "ACTIVE" | "DECOMMISSIONED";
+  decommissioned_at?: string | null;
+  decommission_reason?: string | null;
+
+  protocol_version?: number | null;
+  protocol_compatibility?: "compatible" | "warning" | "unknown";
+
+  // Phase 9 fleet fields
+  last_heartbeat: string;
+  last_sync: string | null;
+  update_availability: UpdateAvailability;
+  target_version: string | null;
+  active_upgrade: ActiveUpgradeSummary | null;
+
+  // Optional new columns (null if the agent hasn't reported them yet)
+  contract_version: number | null;
+  python_version: string | null;
+  last_error: string | null;
+}
+
+/** Query params accepted by GET /api/fleet */
+export interface ListFleetParams {
+  q?: string;
+  lifecycle_state?: "ACTIVE" | "DECOMMISSIONED";
+  health_state?: "HEALTHY" | "STALE" | "OFFLINE" | "DEGRADED";
+  update_availability?: UpdateAvailability;
+  limit?: number;
+  offset?: number;
+}
+
+/**
+ * backend/app/schemas/upgrade.py:UpgradeOut
+ */
+export interface UpgradeOut {
+  id: string;
+  host_id: string;
+  state: UpgradeState;
+  target_version: string;
+  artifact_url: string;
+  artifact_sha256: string;
+  artifact_filename: string | null;
+  request_id: string | null;
+  failure_reason: string | null;
+  previous_version: string | null;
+  previous_artifact_url: string | null;
+  previous_artifact_sha256: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Body for POST /api/hosts/{host_id}/upgrades (admin-only) */
+export interface CreateUpgradeIn {
+  target_version: string;
+  artifact_url: string;
+  artifact_sha256: string;
+  artifact_filename?: string | null;
+  request_id?: string | null;
+}
