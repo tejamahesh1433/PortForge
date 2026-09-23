@@ -256,9 +256,13 @@ def run_upgrade(
 
     artifact_url = str(pending.get("artifact_url", ""))
     artifact_sha256 = str(pending.get("artifact_sha256", ""))
-    raw_filename = pending.get("artifact_filename") or "portforge_agent.whl"
+    raw_filename = pending.get("artifact_filename")
+    if not raw_filename:
+        from urllib.parse import urlparse
+
+        raw_filename = Path(urlparse(artifact_url).path).name or "artifact.whl"
     # Sanitize filename: strip any path components to prevent path traversal.
-    safe_filename = Path(str(raw_filename)).name or "portforge_agent.whl"
+    safe_filename = Path(str(raw_filename)).name or "artifact.whl"
 
     tmp_dir = None
     tmp_path = None

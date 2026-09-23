@@ -125,6 +125,19 @@ def heartbeat(
     pending_upgrade_row = UpgradeRepository(db).get_pending_for_host(agent.host_id)
     pending_upgrade_out = None
     if pending_upgrade_row is not None:
+        allow_downgrade = False
+        if host.agent_version:
+            try:
+                from ..services.version_compare import compare as version_compare
+
+                allow_downgrade = (
+                    version_compare(
+                        pending_upgrade_row.target_version, host.agent_version
+                    )
+                    < 0
+                )
+            except Exception:
+                allow_downgrade = False
         pending_upgrade_out = PendingUpgradeOut(
             id=pending_upgrade_row.id,
             target_version=pending_upgrade_row.target_version,
@@ -132,6 +145,7 @@ def heartbeat(
             artifact_sha256=pending_upgrade_row.artifact_sha256,
             artifact_filename=pending_upgrade_row.artifact_filename,
             state=pending_upgrade_row.state,
+            allow_downgrade=allow_downgrade,
         )
 
     return HeartbeatResponse(

@@ -180,6 +180,7 @@ class AgentRuntime:
             host_id=host_id,
             pending=pending_upgrade,
             current_version=current_version,
+            allow_downgrade=bool(pending_upgrade.get("allow_downgrade", False)),
         )
 
         if succeeded:

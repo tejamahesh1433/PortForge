@@ -21,6 +21,9 @@ class PendingUpgradeOut(ApiModel):
     artifact_sha256: str
     artifact_filename: Optional[str] = None
     state: str
+    # True only for admin rollback deliveries (target < host agent version).
+    # Normal upgrades never set this; Central rejects create-time downgrades.
+    allow_downgrade: bool = False
 
 
 class UpgradeCreateRequest(ApiModel):

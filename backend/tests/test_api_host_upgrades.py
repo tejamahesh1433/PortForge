@@ -401,6 +401,62 @@ def test_rollback_fails_when_no_previous_artifact(client):
     assert r.status_code == 422
 
 
+def test_heartbeat_rollback_sets_allow_downgrade(client, db):
+    """Admin rollback deliveries must flag allow_downgrade for the agent."""
+    from app.models.host import Host
+
+    agent_token, host_id = _enroll(client, agent_version="1.0.0")
+    prev_url = "https://example.com/portforge_agent-1.0.0-py3-none-any.whl"
+    prev_sha = "b" * 64
+    upgrade = _create_upgrade(
+        client,
+        host_id,
+        previous_artifact_url=prev_url,
+        previous_artifact_sha256=prev_sha,
+    ).json()
+
+    # Advance original upgrade to SUCCEEDED, then set host to the new version
+    # so the rollback target is a true downgrade relative to the host.
+    for state in (
+        "DOWNLOADING",
+        "VERIFYING",
+        "INSTALLING",
+        "RESTARTING",
+        "VERIFYING_HEALTH",
+        "SUCCEEDED",
+    ):
+        r = client.post(
+            f"/api/agent/upgrades/{upgrade['id']}/status",
+            headers={"Authorization": f"Bearer {agent_token}"},
+            json={"state": state, "reported_version": _TARGET_VERSION},
+        )
+        assert r.status_code == 200, r.text
+
+    h = db.get(Host, host_id)
+    assert h is not None
+    h.agent_version = _TARGET_VERSION
+    db.flush()
+
+    r = client.post(f"/api/upgrades/{upgrade['id']}/rollback", headers=ADMIN)
+    assert r.status_code == 201
+
+    hb = _heartbeat(client, agent_token, host_id, agent_version=_TARGET_VERSION)
+    assert hb.status_code == 200
+    pu = hb.json()["pending_upgrade"]
+    assert pu is not None
+    assert pu["target_version"] == "1.0.0"
+    assert pu["allow_downgrade"] is True
+    assert pu["artifact_filename"] == "portforge_agent-1.0.0-py3-none-any.whl"
+
+
+def test_heartbeat_normal_upgrade_allow_downgrade_false(client):
+    agent_token, host_id = _enroll(client)
+    _create_upgrade(client, host_id)
+    hb = _heartbeat(client, agent_token, host_id)
+    pu = hb.json()["pending_upgrade"]
+    assert pu["allow_downgrade"] is False
+
+
 def test_rollback_requires_admin(client):
     _, host_id = _enroll(client)
     upgrade = _create_upgrade(client, host_id).json()

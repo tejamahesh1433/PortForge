@@ -493,6 +493,37 @@ def test_agent_runtime_calls_upgrade_handler_on_pending_upgrade():
             mock_handle.assert_called_once_with(pending)
 
 
+def test_handle_pending_upgrade_passes_allow_downgrade():
+    """Runtime must forward pending allow_downgrade into run_upgrade."""
+    from portforge_agent.runtime.agent import AgentRuntime
+
+    with (
+        patch("portforge_agent.runtime.agent.load_central_config") as mock_cfg,
+        patch("portforge_agent.runtime.agent.load_credential", return_value="token"),
+        patch("portforge_agent.runtime.agent.load_state"),
+        patch("portforge_agent.runtime.agent.save_state"),
+        patch("portforge_agent.runtime.agent.CentralClient"),
+        patch("portforge_agent.runtime.agent.SyncManager"),
+        patch("portforge_agent.runtime.agent.ExponentialBackoff"),
+    ):
+        mock_cfg.return_value = MagicMock(enabled=True, url="https://central.example.com")
+        runtime = AgentRuntime()
+        runtime._running = True
+        payload = _good_payload()
+        payload["allow_downgrade"] = True
+        payload["target_version"] = "1.0.0"
+
+        with patch("portforge_agent.upgrade.run_upgrade", return_value=False) as mock_run:
+            with patch("portforge_agent.platform.get_host_id", return_value="host-1"):
+                with patch(
+                    "portforge_agent.version.get_portforge_version",
+                    return_value="1.3.0",
+                ):
+                    runtime._handle_pending_upgrade(payload)
+
+        assert mock_run.call_args.kwargs.get("allow_downgrade") is True
+
+
 def test_handle_pending_upgrade_stops_loop_on_success():
     """When run_upgrade returns True, the runtime must set _running=False."""
     from portforge_agent.runtime.agent import AgentRuntime

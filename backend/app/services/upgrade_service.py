@@ -311,6 +311,11 @@ def rollback_upgrade(
     )
     initial_state = "WAITING_FOR_AGENT" if health_state == HostHealthState.OFFLINE else "APPROVED"
 
+    from urllib.parse import urlparse
+    from pathlib import PurePosixPath
+
+    prev_name = PurePosixPath(urlparse(original.previous_artifact_url).path).name or None
+
     rollback_upgrade_row = HostUpgrade(
         id=uuid.uuid4(),
         host_id=original.host_id,
@@ -319,7 +324,7 @@ def rollback_upgrade(
         target_version=original.previous_version,
         artifact_url=original.previous_artifact_url,
         artifact_sha256=original.previous_artifact_sha256,
-        artifact_filename=None,
+        artifact_filename=prev_name,
         previous_version=host.agent_version,
         previous_artifact_url=original.artifact_url,
         previous_artifact_sha256=original.artifact_sha256,
