@@ -43,7 +43,7 @@ qualification (see [Results](#results) below).
 | Allocation engine | UNIT, INTEGRATION, DISPOSABLE REAL | Phase 11 batch alias, lifecycle guards, concurrent allocation. |
 | Fleet management | INTEGRATION, DISPOSABLE REAL | Multi-host identity, doctor, remote probe semantics. |
 | Host lifecycle | INTEGRATION, DISPOSABLE REAL | Add host, remove record, decommission runbooks. |
-| Agent upgrades | DISPOSABLE REAL | Upgrade/rollback runbooks; **physical multi-OS proof is a qualification gap** (resolve platform-by-platform). |
+| Agent upgrades | DISPOSABLE REAL | Upgrade/rollback runbooks; **physical multi-OS proof completed in Phase 14B**. |
 | Windows | DISPOSABLE REAL | Agent install, service, port discovery on Windows host. |
 | Linux | DISPOSABLE REAL | Agent install, systemd, port discovery on Linux host. |
 | macOS | DISPOSABLE REAL | Agent install, launchd, sleep/resume runbook. |
@@ -54,12 +54,11 @@ qualification (see [Results](#results) below).
 
 ### Deferred / non-blocking
 
-- **MCP server integration** is deferred (Phase 13 design). Absence of MCP is
-  **not a qualification blocker** — the provider-neutral CLI/API contract is the
-  acceptance surface.
-- **Physical multi-OS agent upgrade proof** remains a gap until exercised on each
-  target platform (Windows, Linux, macOS). Track per-platform rows in
+- **Physical multi-OS agent upgrade proof** is complete as of Phase 14B
+  (disposable Windows / Linux / macOS identities). See
   [Platform results](#platform-results).
+- **MCP server integration** remains deferred (Phase 13 design). Absence of MCP
+  is **not a qualification blocker**.
 
 ## Disposable qualification stack
 
@@ -138,7 +137,43 @@ untouched.
 
 Filled during Phase 14 qualification run (2026-09-23). Evidence classes noted inline.
 
-### Automated regression
+### Phase 14B — Qualification Closure (PASS)
+
+| Item | Value |
+|------|-------|
+| Phase 14B | **PASS** |
+| Phase 14 overall | **PASS** |
+| Packaging fix | `9fedcfb` — VERIFIED (host runtime + offline image install; Docker Hub DNS blocked no-cache rebuild) |
+| Correctness follow-ups | `ea6609e` (rollback allow_downgrade + artifact filename); `ca9af1c` (multi-instance env overrides) |
+| Production modified | **NO** |
+
+#### Physical / recovery (14B)
+
+| Check | Result | Notes |
+|-------|--------|-------|
+| Windows disposable upgrade | **PASS** | SOURCE `1.3.0+qual.1` → TARGET `1.3.0+qual.2`; UUID/credential preserved |
+| Linux disposable upgrade | **PASS** | same cycle; isolated systemd unit |
+| macOS disposable upgrade | **PASS** | same cycle; isolated launchd label |
+| Windows SHA mismatch failure | **PASS** | install prevented; version unchanged; failure persisted |
+| Linux rollback | **PASS** (nuance) | Previous artifact SHA-verified and installed (`1.3.0+qual.1`); UUID/credential preserved; heartbeat/sync OK. `restart_service` once returned non-zero → Central reported FAILED; manual qualification unit restart recovered. Root cause: missing `allow_downgrade` delivery / wheel filename on rollback — fixed in `ea6609e`. |
+| Compose runtime launch | **PASS** | PortForge-assigned ports bound on disposable stack; config rollback preserves allocation; release preserves config |
+| Qualification dashboard restart | **PASS** | Fleet/host UI against qual Central; Central state preserved after dashboard restart |
+| Central restart | **PASS** | Physical agent reconnect, same UUID |
+| Qual Postgres restart | **PASS** | Central DB reconnect; agent continues; no duplicates |
+| Agent service restart | **PASS** | Qualification runtime only |
+| Offline / return | **PASS** | Stale/offline then heartbeat resume; same UUID |
+
+#### Automated regression (after 14B fixes)
+
+| Suite | Result | Notes |
+|-------|--------|-------|
+| Backend pytest | **357 PASS** | includes rollback allow_downgrade coverage |
+| Agent pytest | **763 PASS / 3 skipped** | includes allow_downgrade forward + env override coverage |
+| Dashboard tests | **168 PASS** | |
+| Lint / typecheck / build | **PASS** | |
+| Doctor (prod URL, RO) | **PASS** | PRODUCTION READ-ONLY |
+
+### Automated regression (Phase 14 initial)
 
 | Suite | Result | Commit / run | Notes |
 |-------|--------|--------------|-------|
@@ -154,40 +189,42 @@ Filled during Phase 14 qualification run (2026-09-23). Evidence classes noted in
 |-------|--------|-------|
 | Fresh Postgres + full alembic chain | **PASS** | DISPOSABLE REAL — DB `qual` on `:55434` |
 | Central health | **PASS** | Host uvicorn on `:58004` after Docker API image failed (`packaging` missing — fixed in `9fedcfb`; Docker Hub DNS blocked no-cache rebuild) |
-| Dashboard container | **NOT RUN** | Image built once; font build flaky on rebuild; API workaround used |
+| Dashboard | **PASS** (14B) | Qual dashboard on `:3003` against qual Central |
 | Lifecycle / fleet / allocation E2E | **PASS** | `scripts/qual_phase14_e2e.py` — 31/31 checks |
 | Populated migration roundtrip | **PASS** | seed host+alloc+reservation; downgrade `-1` / upgrade `head`; data preserved |
-| Central restart | **PASS** | fleet total preserved |
-| Postgres restart | **PASS** | health recovered `connected` |
+| Central restart | **PASS** | fleet total preserved; re-confirmed in 14B with physical agent |
+| Postgres restart | **PASS** | health recovered `connected`; re-confirmed in 14B |
 | Coding-agent capabilities JSON | **PASS** | `python -m portforge_agent capabilities --json` |
 | Project inspect (sample-stack) | **PASS** | DISPOSABLE REAL CLI |
-| Compose runtime launch | **NOT RUN** | Fixture validated; stack not launched with assigned ports |
-| Physical multi-OS upgrade | **NOT RUN** | See platform table — release-blocking for upgrade claims |
+| Compose runtime launch | **PASS** (14B) | Disposable stack launched with PortForge-assigned ports |
+| Physical multi-OS upgrade | **PASS** (14B) | Windows / Linux / macOS disposable identities |
 
-### Defect fixed during qualification
+### Defects fixed during qualification
 
 | Severity | Defect | Fix |
 |----------|--------|-----|
 | **HIGH** | `ModuleNotFoundError: packaging` on Central Docker start (fleet version compare) | Declared `packaging>=23` in `backend/pyproject.toml` + `requirements.txt` (`9fedcfb`) |
+| **HIGH** | Admin rollback could not install previous wheel (missing filename / downgrade refused) | `allow_downgrade` on pending upgrade + URL-derived `artifact_filename` + handler URL basename fallback (`ea6609e`) |
 
 ### Platform results
 
 | Platform | Agent install | Discovery | Upgrade / rollback | Result | Notes |
 |----------|---------------|-----------|-------------------|--------|-------|
-| Windows | Disposable enroll API **PASS** | Local doctor/collector **PASS** | Physical upgrade **NOT RUN** | **NOT PHYSICALLY QUALIFIED** (upgrade) | Enroll/heartbeat to qual Central only |
-| Linux | **NOT RUN** (no disposable host) | — | **NOT RUN** | **NOT PHYSICALLY QUALIFIED** | Production Linux agents not mutated |
-| macOS | **NOT RUN** (no disposable host) | — | **NOT RUN** | **NOT PHYSICALLY QUALIFIED** | Production Mac agent not mutated |
+| Windows | Disposable **PASS** | Doctor/collector **PASS** | Upgrade **PASS**; SHA fail **PASS**; rollback not run | **PHYSICALLY QUALIFIED** | Production Scheduled Task untouched |
+| Linux | Disposable **PASS** | **PASS** | Upgrade **PASS**; rollback **PASS** (see nuance above) | **PHYSICALLY QUALIFIED** | Isolated `portforge-agent-qual.service` |
+| macOS | Disposable **PASS** | **PASS** | Upgrade **PASS**; rollback not run | **PHYSICALLY QUALIFIED** | Isolated launchd label; sleep/stale not treated as defect |
 
 ### Production read-only (optional observation)
 
 | Check | Result | Notes |
 |-------|--------|-------|
-| Frozen stack unchanged | **PASS** | Central/Dashboard `ghcr.io/...:v1.3.0`; 4/4 agents 1.3.0; identities 4; duplicates 0 |
+| Frozen stack unchanged | **PASS** | Central/Dashboard `1.3.0`; 4/4 agents 1.3.0; identities 4; duplicates 0 |
 | Port collision with qual | **PASS** | Qual used `:55434` / host API `:58004`; production `:58000/:3000/:55432` untouched |
+| Cross-enrollment | **PASS** | Qual identities not in production; production identities not in qual |
 
 ## Sign-off
 
 | Role | Name | Date | SHA qualified |
 |------|------|------|---------------|
-| Operator | Phase 14 harness | 2026-09-23 | `9fedcfb` (11–13 freeze `46d3887` + packaging fix) |
+| Operator | Phase 14 / 14B harness | 2026-09-23 | Freeze after `ca9af1c` (11–13 `46d3887` + `9fedcfb` + 14B fixes) |
 | Reviewer | TBD | | |
