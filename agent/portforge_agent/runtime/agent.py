@@ -64,8 +64,12 @@ class AgentRuntime:
             # Send Heartbeat
             if now - last_heartbeat_time >= heartbeat_interval:
                 import platform
+                import sys
                 from ..collectors.docker import is_docker_available
+                from ..agent_contract import CONTRACT_VERSION
                 docker_available = is_docker_available()
+                # Phase 9/10: include fleet inventory fields on every heartbeat.
+                python_version = sys.version.split()[0]
                 res = self.client.heartbeat(
                     host_id=pf.get_host_id(),
                     hostname=pf.get_hostname(),
@@ -76,6 +80,8 @@ class AgentRuntime:
                     docker_available=docker_available,
                     timestamp=datetime.now(timezone.utc).isoformat(),
                     protocol_version=PROTOCOL_VERSION,
+                    contract_version=CONTRACT_VERSION,
+                    python_version=python_version,
                 )
                 if res.success:
                     last_heartbeat_time = time.time()
@@ -93,6 +99,17 @@ class AgentRuntime:
                         process_pending_probes(self.client, res.data)
                     except Exception:
                         logger.warning("Unexpected error processing pending probes", exc_info=True)
+
+                    # Phase 10: execute a pending upgrade if Central delivered one.
+                    # Runs after probes so probe results are submitted first.
+                    # Never raises -- a failed upgrade must not break the daemon loop.
+                    if isinstance(res.data, dict) and res.data.get("pending_upgrade"):
+                        try:
+                            self._handle_pending_upgrade(res.data["pending_upgrade"])
+                        except Exception:
+                            logger.warning(
+                                "Unexpected error handling pending upgrade", exc_info=True
+                            )
                 else:
                     logger.warning(f"Heartbeat failed: {res.error}")
                     self.backoff.next_delay()
@@ -133,3 +150,40 @@ class AgentRuntime:
                 slept += 0.5
                 
         logger.info("PortForge Agent Runtime stopped cleanly.")
+
+    def _handle_pending_upgrade(self, pending_upgrade: dict) -> None:
+        """Process a pending_upgrade delivered by Central on a heartbeat response.
+
+        Validates and executes the upgrade sequentially (not async) so the
+        daemon doesn't race against itself. If the upgrade succeeds the agent
+        process will restart via the platform adapter, cleanly ending the loop.
+        If validation or installation fails, the failure is reported to Central
+        and the daemon continues its normal loop.
+
+        Never raises -- all exceptions are caught and logged.
+        """
+        from ..upgrade import run_upgrade
+        from ..version import get_portforge_version
+
+        host_id = pf.get_host_id()
+        current_version = get_portforge_version()
+        upgrade_id = pending_upgrade.get("id", "<unknown>")
+        logger.info(
+            "Upgrade request %s received: %s → %s",
+            upgrade_id,
+            current_version,
+            pending_upgrade.get("target_version", "?"),
+        )
+
+        succeeded = run_upgrade(
+            client=self.client,
+            host_id=host_id,
+            pending=pending_upgrade,
+            current_version=current_version,
+        )
+
+        if succeeded:
+            # restart_service() has been called; request clean loop exit so
+            # the scheduled task / systemd / launchd can start the new process.
+            logger.info("Upgrade initiated -- stopping runtime loop for clean restart.")
+            self._running = False
