@@ -39,12 +39,22 @@ def list_allocations(
     return Page(items=items, total=total, limit=limit, offset=offset)
 
 
-@router.post("", response_model=AllocationOut)
-def create_allocation(payload: AllocationIn, response: Response, db: Session = Depends(get_db)) -> AllocationOut:
+def _create_allocation_impl(payload: AllocationIn, response: Response, db: Session) -> AllocationOut:
     existing = AllocationRepository(db).get_by_request_id(payload.request_id) if payload.request_id else None
     result = allocation_service.create_allocation(db, payload)
     response.status_code = 200 if existing is not None else 201
     return result.model_copy(update={"idempotent_replay": existing is not None})
+
+
+@router.post("", response_model=AllocationOut)
+def create_allocation(payload: AllocationIn, response: Response, db: Session = Depends(get_db)) -> AllocationOut:
+    return _create_allocation_impl(payload, response, db)
+
+
+@router.post("/batch", response_model=AllocationOut)
+def create_allocation_batch(payload: AllocationIn, response: Response, db: Session = Depends(get_db)) -> AllocationOut:
+    """Alias for POST /api/allocations — Allocation is already an atomic multi-port bundle."""
+    return _create_allocation_impl(payload, response, db)
 
 
 @router.get("/{allocation_id}", response_model=AllocationOut)
