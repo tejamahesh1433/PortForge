@@ -240,8 +240,9 @@ docker compose up -d
 
 ```bash
 docker compose up -d portforge-postgres
+# from repository root (backend requires the agent package):
+python scripts/bootstrap_dev.py
 cd backend
-pip install -r requirements-dev.txt   # includes `-e ../agent`
 alembic upgrade head
 PORTFORGE_DB_HOST=127.0.0.1 PORTFORGE_DB_HOST_PORT=55432 \
 PORTFORGE_ADMIN_BOOTSTRAP_TOKEN=<your-token> \
