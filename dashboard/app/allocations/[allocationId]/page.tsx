@@ -81,7 +81,7 @@ export default function AllocationDetailPage() {
       {data.status === "active" && (
         <div className="flex flex-wrap justify-end gap-2">
           <Button variant="outline" size="sm" onClick={verify} disabled={verifyMutation.isPending}>
-            {verifyMutation.isPending ? "Verifying&" : "Verify allocation"}
+            {verifyMutation.isPending ? "Verifying…" : "Verify allocation"}
           </Button>
           <Button variant="destructive" size="sm" onClick={() => setConfirmOpen(true)} disabled={verifyMutation.isPending}>
             <Trash2 className="size-4" /> Release allocation
