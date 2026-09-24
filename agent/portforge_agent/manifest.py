@@ -47,9 +47,9 @@ _PROTOCOLS = ("tcp", "udp")
 
 # Phase 8C: `config:` is a new, OPTIONAL top-level key -- a manifest
 # without it validates exactly as it did in Phase 8B (backward compatible).
-_TOP_LEVEL_KEYS = {"version", "project", "target", "ports", "request_id", "config"}
+_TOP_LEVEL_KEYS = {"version", "project", "target", "ports", "request_id", "config", "environments", "ingress"}
 _TARGET_KEYS = {"host"}
-_PORT_ENTRY_KEYS = {"purpose", "protocol", "preferred", "range", "requested_range"}
+_PORT_ENTRY_KEYS = {"purpose", "protocol", "preferred", "internal", "range", "requested_range"}
 
 _CONFIG_KEYS = {"dotenv", "compose", "kubernetes"}
 _DOTENV_ENTRY_KEYS = {"file", "values"}
@@ -97,6 +97,7 @@ class ManifestPortRequest:
     purpose: str
     protocol: str
     preferred_port: Optional[int]
+    internal_port: Optional[int] = None
     requested_range: Optional[str] = None
 
 
@@ -161,6 +162,8 @@ class ProjectManifest:
     requests: List[ManifestPortRequest]
     request_id: Optional[str]
     config: Optional[ConfigMappings]  # Phase 8C, optional -- None for a Phase 8B-only manifest
+    environments: Optional[Dict[str, Any]] = None
+    ingress: Optional[List[Any]] = None
 
 
 def discover_manifest_path(start_dir: Optional[str] = None, walk_up: bool = False) -> Optional[Path]:
@@ -272,6 +275,17 @@ def _validate_port_entry(name: str, entry: Any) -> ManifestPortRequest:
             )
         preferred_port = raw
 
+    internal_port: Optional[int] = None
+    if "internal" in entry:
+        raw_internal = entry["internal"]
+        if isinstance(raw_internal, bool) or not isinstance(raw_internal, int) or not (1 <= raw_internal <= 65535):
+            raise ManifestError(
+                "MANIFEST_INVALID",
+                f"'{context}.internal' must be an integer between 1 and 65535, got {raw_internal!r}.",
+                details=[{"field": f"{context}.internal"}],
+            )
+        internal_port = raw_internal
+
     requested_range: Optional[str] = None
     if "range" in entry and "requested_range" in entry:
         raise ManifestError("MANIFEST_INVALID", f"'{context}' may specify only one of 'range' or 'requested_range'.")
@@ -285,7 +299,14 @@ def _validate_port_entry(name: str, entry: Any) -> ManifestPortRequest:
         requested_range = f"{start}-{end}"
         if preferred_port is not None and not (start <= preferred_port <= end):
             raise ManifestError("MANIFEST_INVALID", f"'{context}.preferred' must fall inside '{requested_range}'.")
-    return ManifestPortRequest(name=name.strip(), purpose=purpose, protocol=protocol, preferred_port=preferred_port, requested_range=requested_range)
+    return ManifestPortRequest(
+        name=name.strip(),
+        purpose=purpose,
+        protocol=protocol,
+        preferred_port=preferred_port,
+        internal_port=internal_port,
+        requested_range=requested_range,
+    )
 
 
 def _validate_dotenv_mapping(entry: Any, index: int, known_names: set) -> DotenvFileMapping:
@@ -677,8 +698,29 @@ def validate_manifest(data: Dict[str, Any]) -> ProjectManifest:
 
     config = _validate_config(data.get("config"), known_names)
 
+    environments: Optional[Dict[str, Any]] = None
+    if "environments" in data:
+        from .targets.resolve import load_environments_from_manifest_data
+
+        load_environments_from_manifest_data(data)
+        environments = data["environments"]
+
+    ingress: Optional[List[Any]] = None
+    if "ingress" in data:
+        from .targets.ingress import parse_ingress_from_manifest
+
+        parse_ingress_from_manifest(data)
+        ingress = data["ingress"]
+
     return ProjectManifest(
-        version=version, project=project, host=host, requests=requests, request_id=request_id, config=config
+        version=version,
+        project=project,
+        host=host,
+        requests=requests,
+        request_id=request_id,
+        config=config,
+        environments=environments,
+        ingress=ingress,
     )
 
 

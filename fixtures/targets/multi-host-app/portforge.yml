@@ -1,0 +1,75 @@
+version: 1
+project: multi-host-app
+target:
+  host: windows-dev
+
+environments:
+  development:
+    targets:
+      windows:
+        host_id: "11111111-1111-1111-1111-111111111111"
+      macbook:
+        host_id: "22222222-2222-2222-2222-222222222222"
+  production:
+    targets:
+      lenovo-prod:
+        host_id: "33333333-3333-3333-3333-333333333333"
+      hp-prod:
+        host_id: "44444444-4444-4444-4444-444444444444"
+
+ports:
+  frontend:
+    purpose: frontend
+    protocol: tcp
+    preferred: 3000
+    internal: 3000
+  api:
+    purpose: api
+    protocol: tcp
+    preferred: 8000
+    internal: 8000
+  postgres:
+    purpose: postgres
+    protocol: tcp
+    preferred: 5432
+    internal: 5432
+  redis:
+    purpose: redis
+    protocol: tcp
+    preferred: 6379
+    internal: 6379
+
+config:
+  dotenv:
+    - file: .env
+      values:
+        API_PORT: api
+        FRONTEND_PORT: frontend
+  compose:
+    - file: docker-compose.yml
+      services:
+        frontend:
+          ports:
+            - allocation: frontend
+              container: 3000
+        api:
+          ports:
+            - allocation: api
+              container: 8000
+        postgres:
+          ports:
+            - allocation: postgres
+              container: 5432
+        redis:
+          ports:
+            - allocation: redis
+              container: 6379
+
+ingress:
+  - name: api-public
+    scheme: https
+    hostname: example.test
+    public_port: 443
+    service: api
+    environment: production
+    target: lenovo-prod

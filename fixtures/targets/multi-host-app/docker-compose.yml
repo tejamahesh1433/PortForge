@@ -1,0 +1,17 @@
+services:
+  frontend:
+    image: node:20
+    ports:
+      - "3000:3000"
+  api:
+    image: python:3.12
+    ports:
+      - "8000:8000"
+  postgres:
+    image: postgres:16
+    ports:
+      - "5432:5432"
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
