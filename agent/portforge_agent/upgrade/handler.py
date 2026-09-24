@@ -25,6 +25,7 @@ import logging
 import re
 import sys
 import tempfile
+import time
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -36,6 +37,9 @@ _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 # Bounded download: prevents a maliciously large artifact from exhausting disk.
 _DOWNLOAD_TIMEOUT = 120  # seconds
 _MAX_WHEEL_BYTES = 50 * 1024 * 1024  # 50 MB
+_DOWNLOAD_MAX_ATTEMPTS = 3
+_DOWNLOAD_BACKOFF_BASE = 2   # seconds; cap at 30s
+_DOWNLOAD_BACKOFF_CAP = 30
 
 
 class UpgradeValidationError(ValueError):
@@ -45,6 +49,13 @@ class UpgradeValidationError(ValueError):
 class UpgradeSHA256Error(ValueError):
     """Raised when the downloaded artifact's SHA-256 does not match the manifest."""
 
+
+class UpgradeTransientDownloadError(OSError):
+    """Raised for transient network failures (timeout, connection reset, 5xx).
+
+    These are eligible for bounded retry with exponential backoff.
+    Permanent errors (4xx, bad URL, local address rejected) raise RuntimeError.
+    """
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -144,9 +155,29 @@ def _download_artifact(url: str, dest_path: Path) -> None:
     """Stream-download the artifact from the validated https URL to dest_path.
 
     Enforces _MAX_WHEEL_BYTES to prevent disk exhaustion from an oversized response.
+
+    Raises:
+        UpgradeTransientDownloadError: on timeout, connection reset, or HTTP 5xx.
+            Caller should retry with backoff.
+        RuntimeError: on permanent failures (HTTP 4xx, non-HTTP errors that are
+            not connection-level).
     """
     req = urllib.request.Request(url, headers={"User-Agent": "PortForge-Agent-Upgrade/1"})
-    with urllib.request.urlopen(req, timeout=_DOWNLOAD_TIMEOUT) as response:
+    try:
+        response = urllib.request.urlopen(req, timeout=_DOWNLOAD_TIMEOUT)
+    except urllib.error.HTTPError as exc:
+        if exc.code is not None and exc.code >= 500:
+            raise UpgradeTransientDownloadError(
+                f"HTTP {exc.code} from artifact server (transient): {exc}"
+            ) from exc
+        raise RuntimeError(f"HTTP {exc.code} downloading artifact (permanent): {exc}") from exc
+    except urllib.error.URLError as exc:
+        # URLError wraps socket.timeout, ConnectionReset, DNS failures, etc.
+        raise UpgradeTransientDownloadError(
+            f"Network error downloading artifact (transient): {exc.reason}"
+        ) from exc
+
+    with response:
         total = 0
         with open(dest_path, "wb") as f:
             while True:
@@ -272,17 +303,42 @@ def run_upgrade(
         tmp_dir = tempfile.mkdtemp(prefix="portforge-upgrade-")
         tmp_path = Path(tmp_dir) / safe_filename
 
-        # DOWNLOADING
+        # DOWNLOADING — up to _DOWNLOAD_MAX_ATTEMPTS with exponential backoff
+        # for transient network errors.  SHA/install errors are never retried.
         _report("DOWNLOADING")
         logger.info(
             "Upgrade: downloading %s from %s (host=%s)",
             target_version, artifact_url, host_id,
         )
-        try:
-            _download_artifact(artifact_url, tmp_path)
-        except Exception as exc:
-            logger.error("Upgrade download failed: %s", exc)
-            _report("FAILED", failure_reason=f"Download failed: {exc}")
+        download_error: Optional[Exception] = None
+        for attempt in range(_DOWNLOAD_MAX_ATTEMPTS):
+            if attempt > 0:
+                delay = min(_DOWNLOAD_BACKOFF_BASE ** attempt, _DOWNLOAD_BACKOFF_CAP)
+                logger.info("Upgrade: download attempt %d/%d, backoff %.0fs", attempt + 1, _DOWNLOAD_MAX_ATTEMPTS, delay)
+                time.sleep(delay)
+            # Delete any partial file from the previous attempt
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
+            try:
+                _download_artifact(artifact_url, tmp_path)
+                download_error = None
+                break
+            except UpgradeTransientDownloadError as exc:
+                download_error = exc
+                logger.warning("Upgrade download transient error (attempt %d/%d): %s", attempt + 1, _DOWNLOAD_MAX_ATTEMPTS, exc)
+                # continue to retry
+            except Exception as exc:
+                # Permanent error — do not retry
+                download_error = exc
+                logger.error("Upgrade download permanent error: %s", exc)
+                break
+
+        if download_error is not None:
+            logger.error("Upgrade download failed after %d attempt(s): %s", _DOWNLOAD_MAX_ATTEMPTS, download_error)
+            _report("FAILED", failure_reason=f"Download failed: {download_error}")
             return False
 
         # VERIFYING

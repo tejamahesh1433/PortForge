@@ -662,3 +662,118 @@ def test_restart_via_windows_honors_task_name_env(monkeypatch):
     cmds = [c.args[0] for c in mock_run.call_args_list]
     assert any(cmd[-1] == "PortForge Agent Qual" for cmd in cmds if "/TN" in cmd)
 
+
+# ---------------------------------------------------------------------------
+# Phase 21: bounded transient download retry
+# ---------------------------------------------------------------------------
+
+def test_transient_error_retried_then_succeeds(tmp_path):
+    """UpgradeTransientDownloadError on first attempt retries and succeeds on second."""
+    from portforge_agent.upgrade.handler import UpgradeTransientDownloadError
+
+    client = _make_client()
+    payload = _good_payload()
+    call_count = {"n": 0}
+
+    def flaky_download(url, dest):
+        call_count["n"] += 1
+        if call_count["n"] < 2:
+            raise UpgradeTransientDownloadError("connection reset")
+        # Write dummy file so SHA verify doesn't error
+        dest.write_bytes(b"fake")
+
+    with (
+        patch("portforge_agent.upgrade.handler.tempfile.mkdtemp", return_value=str(tmp_path)),
+        patch("portforge_agent.upgrade.handler._download_artifact", side_effect=flaky_download),
+        patch("portforge_agent.upgrade.handler._verify_sha256"),
+        patch("portforge_agent.upgrade.handler._install_wheel"),
+        patch("portforge_agent.upgrade.platform_restart.restart_service"),
+        patch("portforge_agent.upgrade.handler.time.sleep"),  # skip real sleep
+    ):
+        result = run_upgrade(client, "test-host", payload, current_version="1.3.0")
+
+    assert result is True
+    assert call_count["n"] == 2
+    states = [c.kwargs["state"] for c in client.report_upgrade_status.call_args_list]
+    assert "FAILED" not in states
+    assert "RESTARTING" in states
+
+
+def test_sha_mismatch_not_retried(tmp_path):
+    """UpgradeSHA256Error must NOT trigger a retry — it fails immediately."""
+    from portforge_agent.upgrade.handler import UpgradeSHA256Error
+
+    client = _make_client()
+    payload = _good_payload()
+    call_count = {"n": 0}
+
+    def download_and_tamper(url, dest):
+        call_count["n"] += 1
+        dest.write_bytes(b"tampered")
+
+    with (
+        patch("portforge_agent.upgrade.handler.tempfile.mkdtemp", return_value=str(tmp_path)),
+        patch("portforge_agent.upgrade.handler._download_artifact", side_effect=download_and_tamper),
+        patch(
+            "portforge_agent.upgrade.handler._verify_sha256",
+            side_effect=UpgradeSHA256Error("SHA-256 mismatch"),
+        ),
+        patch("portforge_agent.upgrade.handler.time.sleep"),
+    ):
+        result = run_upgrade(client, "test-host", payload, current_version="1.3.0")
+
+    assert result is False
+    # Only 1 download attempt before SHA killed it
+    assert call_count["n"] == 1
+    states = [c.kwargs["state"] for c in client.report_upgrade_status.call_args_list]
+    assert states[-1] == "FAILED"
+
+
+def test_max_attempts_exhausted_reports_failed(tmp_path):
+    """Three consecutive transient errors must exhaust retries and report FAILED."""
+    from portforge_agent.upgrade.handler import UpgradeTransientDownloadError, _DOWNLOAD_MAX_ATTEMPTS
+
+    client = _make_client()
+    payload = _good_payload()
+    call_count = {"n": 0}
+
+    def always_transient(url, dest):
+        call_count["n"] += 1
+        raise UpgradeTransientDownloadError("timeout every time")
+
+    with (
+        patch("portforge_agent.upgrade.handler.tempfile.mkdtemp", return_value=str(tmp_path)),
+        patch("portforge_agent.upgrade.handler._download_artifact", side_effect=always_transient),
+        patch("portforge_agent.upgrade.handler.time.sleep"),  # skip real sleep
+    ):
+        result = run_upgrade(client, "test-host", payload, current_version="1.3.0")
+
+    assert result is False
+    assert call_count["n"] == _DOWNLOAD_MAX_ATTEMPTS
+    states = [c.kwargs["state"] for c in client.report_upgrade_status.call_args_list]
+    assert states[-1] == "FAILED"
+    assert "Download failed" in (client.report_upgrade_status.call_args.kwargs.get("failure_reason") or "")
+
+
+def test_permanent_download_error_not_retried(tmp_path):
+    """A permanent (non-transient) download error must not be retried."""
+    client = _make_client()
+    payload = _good_payload()
+    call_count = {"n": 0}
+
+    def permanent_error(url, dest):
+        call_count["n"] += 1
+        raise RuntimeError("HTTP 404 not found")
+
+    with (
+        patch("portforge_agent.upgrade.handler.tempfile.mkdtemp", return_value=str(tmp_path)),
+        patch("portforge_agent.upgrade.handler._download_artifact", side_effect=permanent_error),
+        patch("portforge_agent.upgrade.handler.time.sleep"),
+    ):
+        result = run_upgrade(client, "test-host", payload, current_version="1.3.0")
+
+    assert result is False
+    assert call_count["n"] == 1  # No retry on permanent error
+    states = [c.kwargs["state"] for c in client.report_upgrade_status.call_args_list]
+    assert states[-1] == "FAILED"
+

@@ -102,6 +102,29 @@ class UpgradeRepository:
             stmt = stmt.with_for_update()
         return self.db.execute(stmt).scalar_one_or_none()
 
+    def list_by_request_id(self, request_id: str) -> Sequence[HostUpgrade]:
+        """Return all HostUpgrade rows that share a request_id (fleet rollout key)."""
+        stmt = (
+            select(HostUpgrade)
+            .where(HostUpgrade.request_id == request_id)
+            .order_by(HostUpgrade.created_at.asc())
+        )
+        return self.db.execute(stmt).scalars().all()
+
+    def list_stuck_candidates(self, *, limit: int = 100) -> Sequence[HostUpgrade]:
+        """Return non-terminal upgrades ordered by updated_at ascending.
+
+        The caller applies the per-bucket timeout logic; this just returns
+        a bounded batch of candidates cheaply.
+        """
+        stmt = (
+            select(HostUpgrade)
+            .where(HostUpgrade.state.not_in(TERMINAL_STATES))
+            .order_by(HostUpgrade.updated_at.asc())
+            .limit(limit)
+        )
+        return self.db.execute(stmt).scalars().all()
+
     def get_active_summaries_for_hosts(
         self, host_ids: list[uuid.UUID]
     ) -> dict[uuid.UUID, HostUpgrade]:

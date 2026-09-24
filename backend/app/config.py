@@ -84,6 +84,14 @@ class Settings(BaseSettings):
     # Empty disables host allowlisting (any https host is accepted).
     deployment_artifact_hosts: str = ""
 
+    # --- Upgrade recovery (Phase 21) -----------------------------------------
+    # Thresholds for stuck upgrade detection.  An upgrade that has not
+    # updated its state within the bucket's window is marked FAILED with
+    # failure_reason "stuck_timeout:<STATE>".  All values are in seconds.
+    upgrade_stuck_pending_seconds: int = 3600    # APPROVED, WAITING_FOR_AGENT
+    upgrade_stuck_inflight_seconds: int = 1800   # DOWNLOADING, VERIFYING, INSTALLING
+    upgrade_stuck_restart_seconds: int = 900     # RESTARTING, VERIFYING_HEALTH
+
     # --- Remote bind probe (v1.1-B) ------------------------------------------
     # See docs/v1.1/remote-probe-design.md. A probe result is only trusted as
     # fresh evidence within this window after being queued -- past it, it's
