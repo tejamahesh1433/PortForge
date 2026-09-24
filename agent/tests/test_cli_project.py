@@ -117,8 +117,8 @@ def test_project_validate_unknown_host(tmp_path, capsys):
 def test_project_validate_ambiguous_host(tmp_path, capsys):
     manifest_path = _write_manifest(tmp_path, text=_VALID_MANIFEST.replace("host: NTMKEYA", "host: dup"))
     hosts = {"items": [
-        {"id": "aaaa", "hostname": "dup"},
-        {"id": "bbbb", "hostname": "dup"},
+        {"id": "aaaa", "hostname": "dup", "lifecycle_state": "ACTIVE"},
+        {"id": "bbbb", "hostname": "dup", "lifecycle_state": "ACTIVE"},
     ]}
     with patch("portforge_agent.central_client.CentralClient") as mock_cls:
         client = _mock_client()
@@ -129,6 +129,27 @@ def test_project_validate_ambiguous_host(tmp_path, capsys):
     assert result == 2
     parsed = json.loads(capsys.readouterr().out)
     assert parsed["error"]["code"] == "HOST_AMBIGUOUS"
+
+
+def test_project_validate_prefers_active_over_decommissioned_duplicate(tmp_path, capsys):
+    """Qual dispose-and-re-enroll leaves DECOMMISSIONED tombstones; hostname
+    resolution must pick the ACTIVE peer rather than HOST_AMBIGUOUS."""
+    manifest_path = _write_manifest(tmp_path, text=_VALID_MANIFEST.replace("host: NTMKEYA", "host: pf18"))
+    hosts = {"items": [
+        {"id": "dead", "hostname": "pf18", "lifecycle_state": "DECOMMISSIONED"},
+        {"id": "live", "hostname": "pf18", "lifecycle_state": "ACTIVE"},
+    ]}
+    with patch("portforge_agent.central_client.CentralClient") as mock_cls:
+        client = _mock_client()
+        client.list_hosts.return_value = MagicMock(success=True, data=hosts)
+        mock_cls.return_value = client
+        result = main(["project", "validate", str(manifest_path), "--url", "http://central.example", "--json"])
+
+    assert result == 0
+    parsed = json.loads(capsys.readouterr().out)
+    assert parsed["valid"] is True
+    assert parsed["host"]["id"] == "live"
+    assert parsed["host"]["hostname"] == "pf18"
 
 
 def test_project_validate_malformed_manifest(tmp_path, capsys):

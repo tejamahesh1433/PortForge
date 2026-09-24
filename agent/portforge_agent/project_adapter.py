@@ -91,13 +91,21 @@ def resolve_host_ref(client, host_arg: str) -> "tuple[Optional[NormalizedHostRef
     matches = [h for h in items if h.get("hostname", "").lower() == host_arg.lower()]
     if not matches:
         return None, f"No host named '{host_arg}' is known to Central.", "HOST_NOT_FOUND"
-    if len(matches) > 1:
+    # Decommissioned hosts retain their hostname for UUID lookups but must not
+    # block hostname resolution when an ACTIVE peer exists (Qual dispose-and-
+    # re-enroll leaves DECOMMISSIONED tombstones with the same name).
+    active = [
+        h for h in matches
+        if (h.get("lifecycle_state") or "ACTIVE").upper() != "DECOMMISSIONED"
+    ]
+    candidates = active if active else matches
+    if len(candidates) > 1:
         return (
             None,
             f"Multiple hosts named '{host_arg}' are known to Central; use its UUID instead.",
             "HOST_AMBIGUOUS",
         )
-    return NormalizedHostRef(id=matches[0]["id"], hostname=matches[0]["hostname"]), None, None
+    return NormalizedHostRef(id=candidates[0]["id"], hostname=candidates[0]["hostname"]), None, None
 
 
 NORMALIZED_SCHEMA_VERSION = 1
