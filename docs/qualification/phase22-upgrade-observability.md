@@ -2,7 +2,10 @@
 
 **Date:** 2026-09-24  
 **Branch:** `feature/upgrade-observability-controls`  
-**Base:** Phase 21 `b0a0a966517c0f53b12ec18d77d96276c8b7dcc7` (tree `61a68e21f9b9af0761e8de7865d2e905e99a7b82`)
+**Base:** Phase 21 `b0a0a966517c0f53b12ec18d77d96276c8b7dcc7` (tree `61a68e21f9b9af0761e8de7865d2e905e99a7b82`)  
+**Implementation HEAD:** `4685078294bcee072c9d149abc211dc3a249d531`  
+**Implementation tree:** `815f14b1bd379f1dd76037ff995223b2f1b7de63`  
+**Working tree:** CLEAN (branch tip in FINAL REPORT)
 
 Development / disposable qualification only. No production mutation. No public version bump. No DB migration.
 
