@@ -110,6 +110,15 @@ class AgentRuntime:
                             logger.warning(
                                 "Unexpected error handling pending upgrade", exc_info=True
                             )
+
+                    # Phase 18: execute a pending deployment after upgrades/probes.
+                    if isinstance(res.data, dict) and res.data.get("pending_deployment"):
+                        try:
+                            self._handle_pending_deployment(res.data["pending_deployment"])
+                        except Exception:
+                            logger.warning(
+                                "Unexpected error handling pending deployment", exc_info=True
+                            )
                 else:
                     logger.warning(f"Heartbeat failed: {res.error}")
                     self.backoff.next_delay()
@@ -188,3 +197,17 @@ class AgentRuntime:
             # the scheduled task / systemd / launchd can start the new process.
             logger.info("Upgrade initiated -- stopping runtime loop for clean restart.")
             self._running = False
+
+    def _handle_pending_deployment(self, pending_deployment: dict) -> None:
+        """Process a pending_deployment delivered by Central on a heartbeat response."""
+        from ..deployment import process_pending_deployment
+
+        deployment_id = pending_deployment.get("deployment_id", "<unknown>")
+        logger.info(
+            "Deployment request %s received for %s/%s",
+            deployment_id,
+            pending_deployment.get("project", "?"),
+            pending_deployment.get("environment", "?"),
+        )
+
+        process_pending_deployment(pending_deployment, self.client)

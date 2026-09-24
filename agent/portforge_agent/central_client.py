@@ -254,6 +254,62 @@ class CentralClient:
     def list_hosts(self, limit: int = 500) -> CentralResult:
         return self._request("GET", f"/api/hosts?limit={limit}", authenticated=False)
 
+    # --- Phase 18: agent deployment status reporting -------------------------
+    # Agent credential required -- see docs/design/deployment-schema-proposal.md
+
+    def claim_deployment(self, deployment_id: str) -> CentralResult:
+        """Obtain or renew the deployment claim lease and claim_token."""
+        return self._request("POST", f"/api/agent/deployments/{deployment_id}/claim", body={})
+
+    def deployment_status(
+        self,
+        deployment_id: str,
+        *,
+        claim_token: str,
+        state: str,
+        failure_code: Optional[str] = None,
+        failure_reason: Optional[str] = None,
+    ) -> CentralResult:
+        """Report a deployment lifecycle transition (token required)."""
+        body: Dict[str, Any] = {"claim_token": claim_token, "state": state}
+        if failure_code is not None:
+            body["failure_code"] = failure_code
+        if failure_reason is not None:
+            body["failure_reason"] = failure_reason
+        return self._request("POST", f"/api/agent/deployments/{deployment_id}/status", body=body)
+
+    def deployment_health(
+        self,
+        deployment_id: str,
+        *,
+        claim_token: str,
+        health: Dict[str, Any],
+    ) -> CentralResult:
+        """Submit an allowlisted health snapshot for a deployment attempt."""
+        body = {"claim_token": claim_token, "health": health}
+        return self._request("POST", f"/api/agent/deployments/{deployment_id}/health", body=body)
+
+    # --- Phase 18: client deployment orchestration ---------------------------
+    # Unauthenticated by design — same posture as Phase 8A allocations.
+
+    def plan_deployment(self, body: Dict[str, Any]) -> CentralResult:
+        return self._request("POST", "/api/deployments/plan", body=body, authenticated=False)
+
+    def create_deployment(self, body: Dict[str, Any]) -> CentralResult:
+        return self._request("POST", "/api/deployments", body=body, authenticated=False)
+
+    def get_deployment(self, deployment_id: str) -> CentralResult:
+        return self._request("GET", f"/api/deployments/{deployment_id}", authenticated=False)
+
+    def rollback_deployment(self, deployment_id: str, request_id: str) -> CentralResult:
+        body = {"request_id": request_id}
+        return self._request(
+            "POST",
+            f"/api/deployments/{deployment_id}/rollback",
+            body=body,
+            authenticated=False,
+        )
+
     # --- Phase 8B: project manifest ("plan" candidate info) ------------------
     # `GET /api/recommendations` is an existing, UNMODIFIED Phase 5 endpoint
     # (backend/app/api/recommendations.py) -- this is the only new client
