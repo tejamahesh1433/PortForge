@@ -43,6 +43,46 @@ def compute_plan_fingerprint(manifest: ProjectManifest, project_root: Path) -> s
     return hashlib.sha256(encoded).hexdigest()
 
 
+def compute_target_plan_fingerprint(
+    manifest: ProjectManifest | None,
+    project_root: Path,
+    *,
+    environment: str,
+    target: str,
+    host_id: str,
+    fingerprint_inputs: list[str],
+    intent_summary: dict,
+) -> tuple[str, dict[str, str]]:
+    manifest_hash = _hash_manifest_for_workflow(manifest) if manifest is not None else "NO_MANIFEST"
+    file_hashes: dict[str, str] = {}
+    for relative_file in sorted(set(fingerprint_inputs)):
+        try:
+            resolved = resolve_within_root(project_root, relative_file)
+            file_hashes[relative_file] = sha256_of_path(resolved) or "MISSING"
+        except ConfigPathError:
+            file_hashes[relative_file] = "MISSING"
+
+    if manifest is not None:
+        for relative_file in _config_target_files(manifest):
+            try:
+                resolved = resolve_within_root(project_root, relative_file)
+                file_hashes[relative_file] = sha256_of_path(resolved) or "MISSING"
+            except ConfigPathError:
+                file_hashes[relative_file] = "MISSING"
+
+    canonical = {
+        "mode": "target",
+        "environment": environment,
+        "target": target,
+        "host_id": host_id,
+        "manifest_hash": manifest_hash,
+        "intent": intent_summary,
+        "files": file_hashes,
+    }
+    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest(), file_hashes
+
+
 def compute_workspace_plan_fingerprint(project_root: Path, relative_paths: list[str], intent_summary: dict) -> tuple[str, dict[str, str]]:
     """Fingerprint workspace planning inputs. Returns (hash, per-file hashes)."""
     file_hashes: dict[str, str] = {}
@@ -83,9 +123,75 @@ def load_plan(project_root: Path, plan_id: str) -> dict:
     return json.loads(raw.decode("utf-8"))
 
 
-def verify_plan_fresh(project_root: Path, plan_id: str, manifest: ProjectManifest | None = None) -> None:
+def verify_plan_fresh(
+    project_root: Path,
+    plan_id: str,
+    manifest: ProjectManifest | None = None,
+    *,
+    environment: str | None = None,
+    host_id: str | None = None,
+) -> None:
     record = load_plan(project_root, plan_id)
     mode = record.get("mode") or "manifest"
+
+    if mode == "target":
+        if environment is not None and record.get("environment") != environment:
+            raise McpToolError(
+                "PLAN_TARGET_MISMATCH",
+                "Plan was created for a different environment than requested.",
+                details=[
+                    {
+                        "plan_id": plan_id,
+                        "plan_environment": record.get("environment"),
+                        "requested_environment": environment,
+                    }
+                ],
+            )
+        if host_id is not None and record.get("host_id") != host_id:
+            raise McpToolError(
+                "PLAN_TARGET_MISMATCH",
+                "Plan was created for a different target host than requested.",
+                details=[
+                    {
+                        "plan_id": plan_id,
+                        "plan_host_id": record.get("host_id"),
+                        "requested_host_id": host_id,
+                    }
+                ],
+            )
+        paths = record.get("fingerprint_inputs") or []
+        intent = record.get("intent_summary") or {}
+        current, current_files = compute_target_plan_fingerprint(
+            manifest,
+            project_root,
+            environment=record.get("environment") or environment or "",
+            target=record.get("target") or "",
+            host_id=record.get("host_id") or host_id or "",
+            fingerprint_inputs=paths,
+            intent_summary=intent,
+        )
+        stored = record.get("plan_hash")
+        if stored != current:
+            stored_files = record.get("file_hashes") or {}
+            changed = [
+                path
+                for path in sorted(set(list(stored_files) + list(current_files)))
+                if stored_files.get(path) != current_files.get(path)
+            ]
+            raise McpToolError(
+                "CONFIG_CHANGED_SINCE_PLAN",
+                "Target planning inputs changed since the plan was created.",
+                details=[
+                    {
+                        "plan_id": plan_id,
+                        "stored_hash": stored,
+                        "current_hash": current,
+                        "changed_paths": changed,
+                    }
+                ],
+                recovery={"action": "Call portforge_project_plan with environment/target again before provisioning."},
+            )
+        return
 
     if mode == "workspace":
         paths = record.get("fingerprint_inputs") or []

@@ -6,7 +6,7 @@ from .. import config_manager as cm
 from ..agent_contract import build_contract
 from ..central_client import CentralResult
 from ..manifest import ManifestError, load_and_validate_manifest
-from ..project_adapter import build_candidate_preview, build_normalized_request, to_allocation_body
+from ..project_adapter import build_candidate_preview, build_normalized_request, resolve_host_ref, to_allocation_body
 from ..workflow import WorkflowError, apply_workflow, get_workflow_status, prepare_workflow
 from ..workspace import discover_workspace, plan_workspace, workspace_to_json
 from . import MCP_SCHEMA_VERSION
@@ -14,6 +14,10 @@ from .approval import require_mutate_approval
 from .context import load_manifest_and_host, make_client, resolve_manifest_path, resolve_project_root
 from .errors import McpToolError, map_exception
 from .plans import compute_plan_fingerprint, save_plan, verify_plan_fresh
+from ..targets.models import TargetsError
+from ..targets.plan import plan_for_target
+from ..targets.request_id import namespace_request_id
+from ..targets.resolve import resolve_target
 from .scrub import scrub_secrets
 
 Classification = str
@@ -209,7 +213,29 @@ def _handle_workspace_discover(arguments: dict, server_defaults: dict) -> dict:
     return workspace_to_json(model)
 
 
+def _uses_target_planning(arguments: dict) -> bool:
+    return bool(arguments.get("environment") or arguments.get("target") or arguments.get("target_host_id"))
+
+
 def _handle_project_plan(arguments: dict, server_defaults: dict) -> dict:
+    if _uses_target_planning(arguments):
+        project_root = resolve_project_root(arguments.get("project_root"), arguments.get("manifest_path"))
+        environment = arguments.get("environment")
+        if not environment:
+            raise McpToolError("TARGET_REQUIRED", "environment is required for target-aware planning.")
+        try:
+            return plan_for_target(
+                project_root=project_root,
+                environment=environment,
+                target=arguments.get("target"),
+                target_host_id=arguments.get("target_host_id"),
+                central_url=_url(arguments, server_defaults),
+                logical_request_id=arguments.get("request_id"),
+                include_local_runtime=arguments.get("include_local_runtime", False),
+            )
+        except TargetsError as exc:
+            raise map_exception(exc)
+
     if arguments.get("workspace"):
         project_root = resolve_project_root(arguments.get("project_root"), arguments.get("manifest_path"))
         url = _url(arguments, server_defaults)
@@ -302,6 +328,51 @@ def _handle_project_provision(arguments: dict, server_defaults: dict) -> dict:
     if not request_id:
         raise McpToolError("INVALID_PARAMS", "request_id is required.")
 
+    if _uses_target_planning(arguments):
+        environment = arguments.get("environment")
+        if not environment:
+            raise McpToolError("TARGET_REQUIRED", "environment is required for target-aware provisioning.")
+
+        client, manifest, _host, project_root = load_manifest_and_host(
+            _url(arguments, server_defaults),
+            arguments.get("project_root"),
+            arguments.get("manifest_path"),
+        )
+        try:
+            target_ref = resolve_target(
+                manifest,
+                environment,
+                target=arguments.get("target"),
+                target_host_id=arguments.get("target_host_id"),
+            )
+        except TargetsError as exc:
+            raise map_exception(exc)
+
+        host, host_error, host_code = resolve_host_ref(client, target_ref.host_id)
+        if host_error:
+            raise McpToolError(host_code or "HOST_NOT_FOUND", host_error)
+
+        namespaced_request_id = namespace_request_id(environment, target_ref.alias, request_id)
+
+        plan_id = arguments.get("plan_id")
+        if plan_id:
+            verify_plan_fresh(
+                project_root,
+                plan_id,
+                manifest,
+                environment=environment,
+                host_id=target_ref.host_id,
+            )
+
+        try:
+            result = apply_workflow(client, manifest, host, project_root, namespaced_request_id)
+        except WorkflowError as exc:
+            raise map_exception(exc)
+        result["environment"] = environment
+        result["target"] = target_ref.alias
+        result["namespaced_request_id"] = namespaced_request_id
+        return result
+
     client, manifest, host, project_root = load_manifest_and_host(
         _url(arguments, server_defaults),
         arguments.get("project_root"),
@@ -315,6 +386,14 @@ def _handle_project_provision(arguments: dict, server_defaults: dict) -> dict:
         record = load_plan(project_root, plan_id)
         if record.get("mode") == "workspace":
             verify_plan_fresh(project_root, plan_id, manifest=None)
+        elif record.get("mode") == "target":
+            verify_plan_fresh(
+                project_root,
+                plan_id,
+                manifest,
+                environment=arguments.get("environment"),
+                host_id=arguments.get("target_host_id"),
+            )
         else:
             verify_plan_fresh(project_root, plan_id, manifest)
 
@@ -478,6 +557,11 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 "manifest_path": {"type": "string"},
                 "central_url": {"type": "string"},
                 "workspace": {"type": "boolean"},
+                "environment": {"type": "string"},
+                "target": {"type": "string"},
+                "target_host_id": {"type": "string"},
+                "include_local_runtime": {"type": "boolean"},
+                "request_id": {"type": "string"},
             },
             "additionalProperties": False,
         },
@@ -496,6 +580,9 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 "manifest_path": {"type": "string"},
                 "central_url": {"type": "string"},
                 "plan_id": {"type": "string"},
+                "environment": {"type": "string"},
+                "target": {"type": "string"},
+                "target_host_id": {"type": "string"},
             },
             "required": ["request_id", "confirm_mutate"],
             "additionalProperties": False,

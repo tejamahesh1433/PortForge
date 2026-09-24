@@ -5,6 +5,7 @@ from typing import Any, Optional
 from ..config_files import ConfigPathError
 from ..config_manager import ConfigError
 from ..manifest import ManifestError
+from ..targets.models import TargetsError
 from ..workflow import WorkflowError
 
 
@@ -40,6 +41,9 @@ def error_payload(exc: BaseException) -> dict:
 def map_exception(exc: BaseException) -> McpToolError:
     if isinstance(exc, McpToolError):
         return exc
+
+    if isinstance(exc, TargetsError):
+        return McpToolError(exc.code, exc.message, exc.details)
 
     if isinstance(exc, WorkflowError):
         return McpToolError(exc.code, exc.message, exc.details, exc.recovery)
