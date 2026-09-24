@@ -52,6 +52,8 @@ def build_contract() -> dict:
             "doctor": True,
             "workspace_discover": True,
             "workspace_plan": True,
+            "environment_targets": True,
+            "ingress_plan": True,
         },
         "cli_aliases": {
             "capabilities": "agent-contract",

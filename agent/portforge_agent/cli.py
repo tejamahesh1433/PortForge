@@ -74,6 +74,10 @@ from .agent_contract import build_contract
 from .workflow import WorkflowError, apply_workflow, get_workflow_status, prepare_workflow
 from .project_init import create_manifest, render_manifest
 from .workspace import discover_workspace, plan_workspace, workspace_to_json
+from .targets.models import TargetsError
+from .targets.plan import plan_for_target
+from .targets.request_id import namespace_request_id
+from .targets.resolve import resolve_target
 
 _MIN_COLUMN_WIDTH = 8
 _COLUMN_GAP = 2
@@ -1237,7 +1241,36 @@ def _cmd_project_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
+def _uses_target_planning(args: argparse.Namespace) -> bool:
+    return bool(
+        getattr(args, "environment", None)
+        or getattr(args, "target", None)
+        or getattr(args, "target_host_id", None)
+    )
+
+
+def _print_targets_error(error: TargetsError, args: argparse.Namespace) -> None:
+    if args.json:
+        print(json.dumps({"error": {"code": error.code, "message": error.message, "details": error.details}}, indent=2))
+    else:
+        print(f"Error [{error.code}]: {error.message}", file=sys.stderr)
+
+
+def _target_project_root(args: argparse.Namespace):
+    from pathlib import Path
+
+    manifest_path = _project_manifest_path(args) or discover_manifest_path(walk_up=True)
+    if getattr(args, "project_root", None):
+        return Path(args.project_root).resolve(), manifest_path
+    if manifest_path is not None:
+        return manifest_path.parent.resolve(), manifest_path
+    return Path.cwd().resolve(), manifest_path
+
+
 def _cmd_project_provision(args: argparse.Namespace) -> int:
+    if _uses_target_planning(args):
+        return _cmd_project_provision_target(args)
+
     client, manifest, host, error_code = _load_manifest_and_host(args)
     if error_code is not None:
         return error_code
@@ -1257,6 +1290,124 @@ def _cmd_project_provision(args: argparse.Namespace) -> int:
         _print_workflow_error(exc, args)
         return 1
     print(json.dumps(result, indent=2))
+    return 0
+
+
+def _cmd_project_provision_target(args: argparse.Namespace) -> int:
+    from .mcp.plans import verify_plan_fresh
+
+    client, url_error = _allocation_client(args)
+    if url_error:
+        if args.json:
+            print(json.dumps({"error": {"code": "INVALID_REQUEST", "message": url_error, "details": []}}, indent=2))
+        else:
+            print(f"Error: {url_error}", file=sys.stderr)
+        return 2
+
+    project_root, manifest_path = _target_project_root(args)
+    try:
+        manifest = load_and_validate_manifest(manifest_path)
+    except ManifestError as exc:
+        _print_manifest_error(exc, args)
+        return 2
+
+    try:
+        target_ref = resolve_target(
+            manifest,
+            args.environment,
+            target=getattr(args, "target", None),
+            target_host_id=getattr(args, "target_host_id", None),
+        )
+    except TargetsError as exc:
+        _print_targets_error(exc, args)
+        return 2
+
+    host, host_error, host_code = resolve_host_ref(client, target_ref.host_id)
+    if host_error:
+        if args.json:
+            print(json.dumps({"error": {"code": host_code, "message": host_error, "details": []}}, indent=2))
+        else:
+            print(f"Error: {host_error}", file=sys.stderr)
+        return 2
+
+    if not args.environment:
+        _print_targets_error(
+            TargetsError("TARGET_REQUIRED", "--environment is required for target-aware provisioning."),
+            args,
+        )
+        return 2
+
+    namespaced_request_id = namespace_request_id(args.environment, target_ref.alias, args.request_id)
+
+    if getattr(args, "plan_id", None):
+        try:
+            verify_plan_fresh(
+                project_root,
+                args.plan_id,
+                manifest,
+                environment=args.environment,
+                host_id=target_ref.host_id,
+            )
+        except Exception as exc:
+            from .mcp.errors import map_exception
+
+            mapped = map_exception(exc)
+            if args.json:
+                print(
+                    json.dumps(
+                        {"error": {"code": mapped.code, "message": mapped.message, "details": mapped.details}},
+                        indent=2,
+                    )
+                )
+            else:
+                print(f"Error [{mapped.code}]: {mapped.message}", file=sys.stderr)
+            return 2
+
+    url, _ = _resolve_central_base_url(args)
+    if args.dry_run:
+        try:
+            result = plan_for_target(
+                project_root=project_root,
+                environment=args.environment,
+                target=getattr(args, "target", None),
+                target_host_id=getattr(args, "target_host_id", None),
+                central_url=url,
+                logical_request_id=args.request_id,
+                include_local_runtime=getattr(args, "include_local_runtime", False),
+            )
+        except TargetsError as exc:
+            _print_targets_error(exc, args)
+            return 2
+        result["dry_run"] = True
+        result["request_id"] = namespaced_request_id
+        if args.json:
+            print(json.dumps(result, indent=2))
+        else:
+            print(
+                f"Dry-run provision for '{manifest.project}' on {host.hostname} "
+                f"({args.environment}/{target_ref.alias})\n"
+            )
+            print(f"  Namespaced request_id: {namespaced_request_id}")
+            for row in result.get("services") or []:
+                print(
+                    f"  {row.get('service'):<20} internal={row.get('internal_port')} "
+                    f"host={row.get('host_port')} reason={row.get('reason_code')}"
+                )
+        return 0
+
+    try:
+        result = apply_workflow(client, manifest, host, project_root, namespaced_request_id)
+    except WorkflowError as exc:
+        _print_workflow_error(exc, args)
+        return 1
+
+    result["environment"] = args.environment
+    result["target"] = target_ref.alias
+    result["namespaced_request_id"] = namespaced_request_id
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(json.dumps(result, indent=2))
     return 0
 
 
@@ -1303,6 +1454,48 @@ def _cmd_project_discover(args: argparse.Namespace) -> int:
 
 def _cmd_project_plan(args: argparse.Namespace) -> int:
     from pathlib import Path
+
+    if _uses_target_planning(args):
+        project_root, _manifest_path = _target_project_root(args)
+        url, _error = _resolve_central_base_url(args)
+        if not args.environment:
+            _print_targets_error(
+                TargetsError("TARGET_REQUIRED", "--environment is required for target-aware planning."),
+                args,
+            )
+            return 2
+        try:
+            payload = plan_for_target(
+                project_root=project_root,
+                environment=args.environment,
+                target=getattr(args, "target", None),
+                target_host_id=getattr(args, "target_host_id", None),
+                central_url=url,
+                include_local_runtime=getattr(args, "include_local_runtime", False),
+            )
+        except TargetsError as exc:
+            _print_targets_error(exc, args)
+            return 2
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        else:
+            host = payload.get("host") or {}
+            print(
+                f"Target plan for {project_root} "
+                f"({payload.get('environment')}/{payload.get('target')} on {host.get('hostname') or host.get('id')})\n"
+            )
+            for row in payload.get("services") or []:
+                print(
+                    f"  {row.get('service'):<20} internal={row.get('internal_port')} "
+                    f"host={row.get('host_port')} reason={row.get('reason_code')}"
+                )
+            for binding in payload.get("ingress") or []:
+                print(
+                    f"  ingress {binding.get('name')}: {binding.get('scheme')}://{binding.get('hostname')}:"
+                    f"{binding.get('public_port')} -> {binding.get('service')} [{binding.get('status')}]"
+                )
+            print(f"\n  plan_id: {payload.get('plan_id')}")
+        return 0
 
     use_workspace = getattr(args, "workspace", False)
     manifest_path = _project_manifest_path(args) or discover_manifest_path(walk_up=True)
@@ -2052,6 +2245,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Discover the workspace statically and build a coordinated port plan",
     )
     project_plan_parser.add_argument("--project-root", type=str, default=None)
+    project_plan_parser.add_argument("--environment", type=str, default=None, help="Named environment (development, production, ...)")
+    project_plan_parser.add_argument("--target", type=str, default=None, help="Deployment target alias within the environment")
+    project_plan_parser.add_argument("--target-host-id", type=str, default=None, help="Deployment target host UUID (overrides alias resolution)")
+    project_plan_parser.add_argument(
+        "--include-local-runtime",
+        action="store_true",
+        help="Include local runtime port conflicts when planning (default: off for remote targets)",
+    )
     project_plan_parser.set_defaults(func=_cmd_project_plan)
 
     project_discover_parser = project_subparsers.add_parser(
@@ -2097,6 +2298,11 @@ def build_parser() -> argparse.ArgumentParser:
     project_provision_parser.add_argument("--request-id", type=str, required=True)
     project_provision_parser.add_argument("--dry-run", action="store_true")
     project_provision_parser.add_argument("--project-root", type=str, default=None)
+    project_provision_parser.add_argument("--environment", type=str, default=None)
+    project_provision_parser.add_argument("--target", type=str, default=None)
+    project_provision_parser.add_argument("--target-host-id", type=str, default=None)
+    project_provision_parser.add_argument("--plan-id", type=str, default=None)
+    project_provision_parser.add_argument("--include-local-runtime", action="store_true")
     project_provision_parser.set_defaults(func=_cmd_project_provision)
     project_init_parser = project_subparsers.add_parser("init", help="Create a conservative starter manifest without overwriting")
     project_init_parser.add_argument("--project", required=False); project_init_parser.add_argument("--host", required=False)
