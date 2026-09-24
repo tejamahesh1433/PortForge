@@ -120,7 +120,12 @@ Use placeholders; do not hardcode personal paths.
 
 ### Claude Code
 
-Add to MCP settings (example):
+```bash
+claude mcp add -s local portforge -- portforge mcp serve
+claude mcp get portforge   # expect Connected
+```
+
+JSON form (example):
 
 ```json
 {
@@ -136,30 +141,14 @@ Add to MCP settings (example):
 }
 ```
 
-Absolute form:
-
-```json
-{
-  "mcpServers": {
-    "portforge": {
-      "command": "/path/to/portforge",
-      "args": ["mcp", "serve"]
-    }
-  }
-}
-```
-
-Windows (Python module fallback):
+Windows module fallback:
 
 ```json
 {
   "mcpServers": {
     "portforge": {
       "command": "python",
-      "args": ["-m", "portforge_agent", "mcp", "serve"],
-      "env": {
-        "PORTFORGE_CENTRAL_URL": "http://127.0.0.1:58004"
-      }
+      "args": ["-m", "portforge_agent", "mcp", "serve"]
     }
   }
 }
@@ -167,36 +156,37 @@ Windows (Python module fallback):
 
 ### Codex
 
-Register the same stdio server in Codex MCP config, for example:
-
-```toml
-[mcp_servers.portforge]
-command = "portforge"
-args = ["mcp", "serve"]
-
-[mcp_servers.portforge.env]
-PORTFORGE_CENTRAL_URL = "http://127.0.0.1:58004"
-```
-
-Or:
-
-```toml
-[mcp_servers.portforge]
-command = "python"
-args = ["-m", "portforge_agent", "mcp", "serve"]
+```bash
+codex mcp add portforge -- portforge mcp serve
+codex mcp get portforge
 ```
 
 ### Antigravity
 
-Point Antigravity’s MCP server entry at the same command:
+Point Antigravity’s MCP entry at the same command (`portforge mcp serve`).
+There is no Antigravity-specific PortForge binary.
 
-| Field | Value |
-|-------|-------|
-| Command | `portforge` (or `python`) |
-| Args | `mcp serve` (or `-m portforge_agent mcp serve`) |
-| Env | `PORTFORGE_CENTRAL_URL=http://…` |
+### Provider qualification (Phase 16)
 
-There is **no** Antigravity-specific PortForge binary. Providers share one server.
+See [`docs/qualification/phase16-provider-validation.md`](../qualification/phase16-provider-validation.md).
+
+| Provider | Registration | Actual tool call | Notes |
+|----------|--------------|------------------|-------|
+| Codex | PASS | PASS | `portforge_workspace_discover` completed |
+| Claude Code | PASS (Connected) | EXTERNAL BLOCKED | OAuth session expired for `claude -p` |
+| Antigravity | EXTERNAL BLOCKED | NO | Client not installed |
+
+---
+
+## Workspace discovery (Phase 16)
+
+Additional READ tool:
+
+- `portforge_workspace_discover`
+
+`portforge_project_plan` accepts additive `workspace: true`.
+
+Guide: [`workspace-discovery.md`](workspace-discovery.md).
 
 ---
 

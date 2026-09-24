@@ -38,3 +38,4 @@ status*.txt
 *_pid.txt
 *.log
 .qual-artifacts/
+.qual-temps/
