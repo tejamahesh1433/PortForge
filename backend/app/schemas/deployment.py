@@ -66,6 +66,7 @@ class PendingDeploymentOut(ApiModel):
     plan_hash: str
     claim_token: Optional[str] = None
     claim_expires_at: Optional[datetime] = None
+    ports_json: Optional[dict] = None
 
 
 class DeploymentOut(ApiModel):

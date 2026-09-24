@@ -27,9 +27,28 @@ from .package import (
     extract_archive_safe,
     fetch_package,
 )
+from .port_recheck import (
+    PortConflictError,
+    PortStateUnknownError,
+    assert_ports_clear_for_apply,
+    recheck_host_ports_live,
+    required_host_ports_from_ports_json,
+)
 from .store import activate_revision, remove_revision, revision_dir, stage_revision_dir
 
 logger = logging.getLogger("portforge_agent.deployment")
+
+
+def _maybe_test_interrupt(point: str) -> None:
+    """Raise RuntimeError when PORTFORGE_DEPLOYMENT_TEST_INTERRUPT matches *point*.
+
+    Used by qualification tests to halt mid-flight without reporting FAILED.
+    Never called in production (the env-var is never set in production).
+    """
+    import os
+
+    if os.environ.get("PORTFORGE_DEPLOYMENT_TEST_INTERRUPT") == point:
+        raise RuntimeError(f"PORTFORGE_DEPLOYMENT_TEST_INTERRUPT={point}")
 
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 _DEFAULT_ALLOWED_HOSTS: FrozenSet[str] = frozenset()
@@ -209,6 +228,35 @@ def process_pending_deployment(pending: Dict[str, Any], client: Any) -> bool:
         except ComposeValidationError as exc:
             return _fail("COMPOSE_VALIDATION_FAILED", str(exc))
 
+        # Phase 18.6: test interrupt — before_apply halts without reporting FAILED.
+        _maybe_test_interrupt("before_apply")
+
+        # Renew claim lease before the long apply window so ownership stays valid.
+        try:
+            renew = client.claim_deployment(deployment_id)
+            if renew.success and isinstance(renew.data, dict) and renew.data.get("claim_token"):
+                token = str(renew.data["claim_token"])
+        except Exception as exc:
+            logger.warning("Deployment claim renew raised for %s: %s", deployment_id, exc)
+        # Phase 18.6: pre-apply port recheck — verify declared host ports are free.
+        _ports_json = pending.get("ports_json")
+        _required_ports = required_host_ports_from_ports_json(
+            _ports_json if isinstance(_ports_json, dict) else None
+        )
+        if _required_ports:
+            try:
+                _recheck = recheck_host_ports_live(_required_ports, project_name)
+                assert_ports_clear_for_apply(_recheck)
+            except PortConflictError as exc:
+                return _fail("DEPLOYMENT_PORT_CONFLICT", str(exc))
+            except PortStateUnknownError as exc:
+                return _fail("DEPLOYMENT_PORT_STATE_UNKNOWN", str(exc))
+        else:
+            logger.warning(
+                "Deployment %s has no declared host ports; skipping pre-apply port recheck",
+                deployment_id,
+            )
+
         try:
             compose_apply(compose_files, project_name, workdir)
         except DockerUnavailableError as exc:
@@ -217,6 +265,8 @@ def process_pending_deployment(pending: Dict[str, Any], client: Any) -> bool:
             return _fail("COMPOSE_APPLY_FAILED", str(exc))
 
         _status("VERIFYING")
+        # Phase 18.6: test interrupt — during_verify halts without reporting FAILED.
+        _maybe_test_interrupt("during_verify")
         compose_status = inspect_status(compose_files, project_name, workdir)
         health = evaluate_health(compose_status, health_checks)
         _health(health)
@@ -236,6 +286,16 @@ def process_pending_deployment(pending: Dict[str, Any], client: Any) -> bool:
             overall,
         )
         return True
+
+    except RuntimeError as _rt_exc:
+        # Propagate unexpected RuntimeErrors; swallow only test interrupts.
+        _rt_msg = str(_rt_exc)
+        if _rt_msg.startswith("PORTFORGE_DEPLOYMENT_TEST_INTERRUPT="):
+            logger.warning(
+                "Deployment %s halted by test interrupt: %s", deployment_id, _rt_msg
+            )
+            return False
+        raise
 
     finally:
         try:

@@ -166,6 +166,7 @@ def heartbeat(
             plan_hash=pending_deployment_row.plan_hash,
             claim_token=pending_deployment_row.claim_token,
             claim_expires_at=pending_deployment_row.claim_expires_at,
+            ports_json=pending_deployment_row.ports_json,
         )
 
     return HeartbeatResponse(

@@ -152,3 +152,159 @@ def test_rejects_disallowed_payload_fields():
     ok = process_pending_deployment(pending, client)
     assert ok is False
     client.deployment_status.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Phase 18.6: port recheck + test interrupt
+# ---------------------------------------------------------------------------
+
+def _make_fetch_copy(archive: "Path"):
+    """Return a fake fetch function that copies the archive to dest_path."""
+    def _fake_fetch(uri, expected_sha256, dest_path, **kwargs):
+        dest_path.write_bytes(archive.read_bytes())
+    return _fake_fetch
+
+
+def test_port_conflict_never_calls_apply(tmp_path, monkeypatch):
+    """When pre-apply port recheck finds an unexpected occupant, compose_apply is never called."""
+    compose = b"services:\n  web:\n    image: nginx\n"
+    archive, package_sha, manifest_sha = build_local_package(
+        [("docker-compose.yml", compose)],
+        compose_files=["docker-compose.yml"],
+        dest_archive=tmp_path / "package.zip",
+    )
+
+    client = _make_client()
+    pending = _pending(
+        package_sha256=package_sha,
+        package_manifest_sha256=manifest_sha,
+        ports_json={
+            "services": [
+                {"name": "api", "host_port": 18000, "protocol": "tcp"}
+            ]
+        },
+    )
+
+    from portforge_agent.deployment.port_recheck import (
+        PortConflictError,
+        PortRecheckResult,
+        PortRecheckVerdict,
+    )
+
+    mock_recheck = MagicMock(
+        return_value=[
+            PortRecheckResult(
+                service="api",
+                protocol="tcp",
+                host_port=18000,
+                verdict=PortRecheckVerdict.UNEXPECTED_OCCUPANT,
+                reason="Port held by some-other-project",
+            )
+        ]
+    )
+    apply_mock = MagicMock()
+    validate_mock = MagicMock()
+
+    monkeypatch.setattr("portforge_agent.deployment.handler.fetch_package", _make_fetch_copy(archive))
+    monkeypatch.setattr("portforge_agent.deployment.handler.compose_validate", validate_mock)
+    monkeypatch.setattr("portforge_agent.deployment.handler.compose_apply", apply_mock)
+    monkeypatch.setattr("portforge_agent.deployment.handler.recheck_host_ports_live", mock_recheck)
+    monkeypatch.setenv("PORTFORGE_DATA_DIR", str(tmp_path / "data"))
+
+    ok = process_pending_deployment(pending, client)
+    assert ok is False
+    apply_mock.assert_not_called()
+
+    failed_calls = [
+        call
+        for call in client.deployment_status.call_args_list
+        if call.kwargs.get("state") == "FAILED"
+    ]
+    assert failed_calls, "Expected a FAILED status report"
+    assert failed_calls[-1].kwargs["failure_code"] == "DEPLOYMENT_PORT_CONFLICT"
+
+
+def test_expected_owner_port_allows_apply(tmp_path, monkeypatch):
+    """When the port is held by the expected compose project, apply proceeds normally."""
+    compose = b"services:\n  web:\n    image: nginx\n"
+    archive, package_sha, manifest_sha = build_local_package(
+        [("docker-compose.yml", compose)],
+        compose_files=["docker-compose.yml"],
+        dest_archive=tmp_path / "package.zip",
+    )
+
+    client = _make_client()
+    pending = _pending(
+        package_sha256=package_sha,
+        package_manifest_sha256=manifest_sha,
+        ports_json={
+            "services": [{"name": "api", "host_port": 18000, "protocol": "tcp"}]
+        },
+    )
+
+    from portforge_agent.deployment.port_recheck import (
+        PortRecheckResult,
+        PortRecheckVerdict,
+    )
+
+    mock_recheck = MagicMock(
+        return_value=[
+            PortRecheckResult(
+                service="api",
+                protocol="tcp",
+                host_port=18000,
+                verdict=PortRecheckVerdict.EXPECTED_EXISTING_DEPLOYMENT,
+                reason="Port held by expected compose project 'pf-demo-app-staging-...'",
+            )
+        ]
+    )
+    validate_mock = MagicMock()
+    apply_mock = MagicMock()
+    inspect_mock = MagicMock(
+        return_value={"available": True, "services": [{"state": "running"}]}
+    )
+
+    monkeypatch.setattr("portforge_agent.deployment.handler.fetch_package", _make_fetch_copy(archive))
+    monkeypatch.setattr("portforge_agent.deployment.handler.compose_validate", validate_mock)
+    monkeypatch.setattr("portforge_agent.deployment.handler.compose_apply", apply_mock)
+    monkeypatch.setattr("portforge_agent.deployment.handler.inspect_status", inspect_mock)
+    monkeypatch.setattr("portforge_agent.deployment.handler.recheck_host_ports_live", mock_recheck)
+    monkeypatch.setenv("PORTFORGE_DATA_DIR", str(tmp_path / "data"))
+
+    ok = process_pending_deployment(pending, client)
+    assert ok is True
+    apply_mock.assert_called_once()
+
+
+def test_before_apply_interrupt_prevents_apply(tmp_path, monkeypatch):
+    """PORTFORGE_DEPLOYMENT_TEST_INTERRUPT=before_apply prevents compose_apply without FAILED."""
+    compose = b"services:\n  web:\n    image: nginx\n"
+    archive, package_sha, manifest_sha = build_local_package(
+        [("docker-compose.yml", compose)],
+        compose_files=["docker-compose.yml"],
+        dest_archive=tmp_path / "package.zip",
+    )
+
+    client = _make_client()
+    pending = _pending(package_sha256=package_sha, package_manifest_sha256=manifest_sha)
+
+    apply_mock = MagicMock()
+    validate_mock = MagicMock()
+
+    monkeypatch.setattr("portforge_agent.deployment.handler.fetch_package", _make_fetch_copy(archive))
+    monkeypatch.setattr("portforge_agent.deployment.handler.compose_validate", validate_mock)
+    monkeypatch.setattr("portforge_agent.deployment.handler.compose_apply", apply_mock)
+    monkeypatch.setenv("PORTFORGE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("PORTFORGE_DEPLOYMENT_TEST_INTERRUPT", "before_apply")
+
+    ok = process_pending_deployment(pending, client)
+    assert ok is False
+    apply_mock.assert_not_called()
+
+    # No FAILED status must have been reported (leave deployment in STARTING for recovery).
+    failed_calls = [
+        call
+        for call in client.deployment_status.call_args_list
+        if call.kwargs.get("state") == "FAILED"
+    ]
+    assert not failed_calls, f"Unexpected FAILED calls: {failed_calls}"
