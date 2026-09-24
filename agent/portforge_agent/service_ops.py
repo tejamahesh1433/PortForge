@@ -283,20 +283,76 @@ def _install_macos() -> ServiceOpResult:
     )
 
 
+def _macos_launchd_state(print_stdout: str) -> Optional[str]:
+    """Parse `state = running|not running|...` from `launchctl print` output."""
+    for line in print_stdout.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("state ="):
+            return stripped.split("=", 1)[1].strip().lower()
+    return None
+
+
 def _status_macos() -> ServiceOpResult:
     result = _run(["launchctl", "print", _launchd_service_target()])
-    if result.returncode == 0:
-        return ServiceOpResult(True, "LaunchAgent is loaded.", detail=result.stdout.strip())
-    return ServiceOpResult(
-        False, "LaunchAgent is not loaded.", detail=(result.stderr or result.stdout).strip(),
-        returncode=result.returncode,
-    )
+    if result.returncode != 0:
+        return ServiceOpResult(
+            False, "LaunchAgent is not loaded.", detail=(result.stderr or result.stdout).strip(),
+            returncode=result.returncode,
+        )
+    detail = result.stdout.strip()
+    state = _macos_launchd_state(detail)
+    if state == "running":
+        return ServiceOpResult(True, "LaunchAgent is running.", detail=detail)
+    if state:
+        return ServiceOpResult(
+            False, f"LaunchAgent is loaded but not running (state={state}).", detail=detail,
+        )
+    # Older launchctl output without an explicit state line — loaded is best-effort success.
+    return ServiceOpResult(True, "LaunchAgent is loaded.", detail=detail)
 
 
 def _start_macos() -> ServiceOpResult:
-    result = _run(["launchctl", "kickstart", "-k", _launchd_service_target()])
+    # kickstart -k can block briefly while launchd restarts the job; allow more
+    # than the default 15s so a slow wake/login session does not look like a
+    # hard failure (and leave the Mac agent "offline" in Central).
+    try:
+        result = _run(
+            ["launchctl", "kickstart", "-k", _launchd_service_target()],
+            timeout=60.0,
+        )
+    except subprocess.TimeoutExpired as exc:
+        # kickstart sometimes hangs after the job is already running. Re-check
+        # status before reporting failure so operators are not stuck offline.
+        status = _status_macos()
+        if status.success:
+            return ServiceOpResult(
+                True,
+                "LaunchAgent kickstart timed out but the agent is running.",
+                detail=status.detail,
+            )
+        return ServiceOpResult(
+            False,
+            "Failed to kickstart LaunchAgent (timed out).",
+            detail=str(exc),
+            returncode=-1,
+        )
     if result.returncode == 0:
         return ServiceOpResult(True, "LaunchAgent kickstarted.", detail=result.stdout.strip())
+    # kickstart can fail if the job was unloaded; try bootstrap then kickstart once.
+    plist = gen.launchd_plist_path()
+    if plist.exists():
+        boot = _run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)], timeout=30.0)
+        if boot.returncode == 0:
+            retry = _run(
+                ["launchctl", "kickstart", "-k", _launchd_service_target()],
+                timeout=60.0,
+            )
+            if retry.returncode == 0:
+                return ServiceOpResult(
+                    True,
+                    "LaunchAgent re-bootstrapped and kickstarted.",
+                    detail=retry.stdout.strip(),
+                )
     return ServiceOpResult(
         False, "Failed to kickstart LaunchAgent.", detail=(result.stderr or result.stdout).strip(),
         returncode=result.returncode,

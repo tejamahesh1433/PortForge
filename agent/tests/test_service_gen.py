@@ -245,10 +245,27 @@ def test_build_launchd_plist_dict_structure(tmp_path):
     assert d["Label"] == gen.LAUNCHD_LABEL
     assert d["ProgramArguments"] == ["/usr/bin/python3", "-m", "portforge_agent", "agent", "run"]
     assert d["RunAtLoad"] is True
-    assert d["KeepAlive"] == {"SuccessfulExit": False}
+    assert d["KeepAlive"] == {"SuccessfulExit": False, "NetworkState": True}
     assert d["StandardOutPath"] == str(tmp_path / "agent.out.log")
     assert d["StandardErrorPath"] == str(tmp_path / "agent.err.log")
     assert d["EnvironmentVariables"]["PATH"].startswith("/usr/bin:/bin:/usr/sbin:/sbin")
+
+
+def test_v150_keepalive_successful_exit_false_alone_lacks_network_recovery():
+    """Reproduce the v1.5.0 LaunchAgent defect class (structural).
+
+    v1.5.0 emitted KeepAlive={"SuccessfulExit": False} only. That tells launchd
+    not to restart after a clean (status 0) exit, and does not ask launchd to
+    restart when the network returns after sleep/wake. The v1.5.1 generator
+    must keep SuccessfulExit=False (so `service stop` still works) AND add
+    NetworkState=True for recovery after network transitions.
+    """
+    v150_keepalive = {"SuccessfulExit": False}
+    assert "NetworkState" not in v150_keepalive
+
+    d = gen.build_launchd_plist_dict(python_executable="/usr/bin/python3")
+    assert d["KeepAlive"]["SuccessfulExit"] is False
+    assert d["KeepAlive"]["NetworkState"] is True
 
 
 def test_build_launchd_plist_bytes_round_trips_via_plistlib(tmp_path):
@@ -256,6 +273,7 @@ def test_build_launchd_plist_bytes_round_trips_via_plistlib(tmp_path):
     parsed = plistlib.loads(raw)
 
     assert parsed == gen.build_launchd_plist_dict(python_executable="/usr/bin/python3", log_dir=tmp_path)
+    assert parsed["KeepAlive"] == {"SuccessfulExit": False, "NetworkState": True}
 
 
 def test_launchd_plist_path_is_per_user_launchagents(monkeypatch, tmp_path):

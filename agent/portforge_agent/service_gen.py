@@ -253,6 +253,10 @@ def build_launchd_plist_dict(
     isn't configured yet, so `portforge agent service stop` doesn't fight
     launchd's own restart logic.
 
+    KeepAlive.NetworkState=True asks launchd to (re)start the job when the
+    network becomes available -- important on MacBooks that sleep and
+    otherwise leave Central showing the host OFFLINE until a manual kickstart.
+
     EnvironmentVariables.PATH (see build_launchd_path()) is what lets
     background Docker discovery find the `docker` CLI under launchd's
     otherwise-minimal PATH without sourcing any user shell configuration.
@@ -262,7 +266,7 @@ def build_launchd_plist_dict(
         "Label": LAUNCHD_LABEL,
         "ProgramArguments": agent_run_args(python_executable),
         "RunAtLoad": True,
-        "KeepAlive": {"SuccessfulExit": False},
+        "KeepAlive": {"SuccessfulExit": False, "NetworkState": True},
         "StandardOutPath": str(stdout_path),
         "StandardErrorPath": str(stderr_path),
         "EnvironmentVariables": {"PATH": build_launchd_path()},

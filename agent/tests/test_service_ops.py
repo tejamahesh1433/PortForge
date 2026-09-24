@@ -402,7 +402,7 @@ def test_install_macos_plist_valid_after_reinstall(monkeypatch, tmp_path):
     d = plistlib.loads(plist_path.read_bytes())
     assert d["Label"] == gen.LAUNCHD_LABEL
     assert d["RunAtLoad"] is True
-    assert d["KeepAlive"] == {"SuccessfulExit": False}
+    assert d["KeepAlive"] == {"SuccessfulExit": False, "NetworkState": True}
     assert "ProgramArguments" in d
     assert "StandardOutPath" in d
     assert "StandardErrorPath" in d
@@ -475,6 +475,73 @@ def test_status_macos_target_construction(monkeypatch):
     assert mock_run.call_args[0][0] == ["launchctl", "print", f"gui/42/{gen.LAUNCHD_LABEL}"]
 
 
+def test_status_macos_loaded_but_not_running(monkeypatch):
+    monkeypatch.setattr(pf, "detect_os", lambda: pf.OperatingSystem.MACOS)
+    monkeypatch.setattr(service_ops.os, "getuid", lambda: 42, raising=False)
+
+    with patch(
+        "portforge_agent.service_ops._run",
+        return_value=_cp(0, "state = not running\npath = /tmp/x.plist"),
+    ):
+        result = service_ops.status()
+
+    assert result.success is False
+    assert "not running" in result.message.lower()
+
+
+def test_start_macos_kickstart_timeout_but_running(monkeypatch):
+    monkeypatch.setattr(pf, "detect_os", lambda: pf.OperatingSystem.MACOS)
+    monkeypatch.setattr(service_ops.os, "getuid", lambda: 42, raising=False)
+
+    calls = {"n": 0}
+
+    def fake_run(args, timeout=15.0):
+        calls["n"] += 1
+        if args[:2] == ["launchctl", "kickstart"]:
+            raise subprocess.TimeoutExpired(cmd=args, timeout=timeout)
+        # status re-check after timeout
+        return _cp(0, "state = running")
+
+    monkeypatch.setattr(service_ops, "_run", fake_run)
+    result = service_ops.start()
+    assert result.success is True
+    assert "timed out" in result.message.lower()
+    assert "running" in result.message.lower()
+
+
+def test_start_macos_bootstraps_when_kickstart_fails_and_plist_exists(monkeypatch, tmp_path):
+    monkeypatch.setattr(pf, "detect_os", lambda: pf.OperatingSystem.MACOS)
+    monkeypatch.setattr(service_ops.os, "getuid", lambda: 42, raising=False)
+    plist = tmp_path / f"{gen.LAUNCHD_LABEL}.plist"
+    plist.write_bytes(b"<plist/>")
+    monkeypatch.setattr(gen, "launchd_plist_path", lambda: plist)
+
+    calls: list[list[str]] = []
+
+    def fake_run(args, timeout=15.0):
+        calls.append(list(args))
+        if args[:2] == ["launchctl", "kickstart"] and len([c for c in calls if c[:2] == ["launchctl", "kickstart"]]) == 1:
+            return _cp(1, "", "Could not find service")
+        if args[:2] == ["launchctl", "bootstrap"]:
+            return _cp(0)
+        if args[:2] == ["launchctl", "kickstart"]:
+            return _cp(0)
+        return _cp(0)
+
+    monkeypatch.setattr(service_ops, "_run", fake_run)
+    result = service_ops.start()
+    assert result.success is True
+    assert "re-bootstrapped" in result.message.lower()
+    assert ["launchctl", "bootstrap", "gui/42", str(plist)] in calls
+    assert calls.count(["launchctl", "kickstart", "-k", f"gui/42/{gen.LAUNCHD_LABEL}"]) == 2
+
+
+def test_macos_launchd_state_parser():
+    assert service_ops._macos_launchd_state("state = running\n") == "running"
+    assert service_ops._macos_launchd_state("  state = not running") == "not running"
+    assert service_ops._macos_launchd_state("path = /tmp/x\n") is None
+
+
 def test_start_stop_macos_command_construction(monkeypatch):
     monkeypatch.setattr(pf, "detect_os", lambda: pf.OperatingSystem.MACOS)
     monkeypatch.setattr(service_ops.os, "getuid", lambda: 42, raising=False)
@@ -482,6 +549,7 @@ def test_start_stop_macos_command_construction(monkeypatch):
     with patch("portforge_agent.service_ops._run", return_value=_cp(0)) as mock_run:
         service_ops.start()
     assert mock_run.call_args[0][0] == ["launchctl", "kickstart", "-k", f"gui/42/{gen.LAUNCHD_LABEL}"]
+    assert mock_run.call_args.kwargs.get("timeout") == 60.0
 
     with patch("portforge_agent.service_ops._run", return_value=_cp(0)) as mock_run:
         service_ops.stop()
