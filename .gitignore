@@ -41,3 +41,7 @@ status*.txt
 *.log
 .qual-artifacts/
 .qual-temps/
+
+# Local PortForge plan/workflow state
+.portforge/
+
