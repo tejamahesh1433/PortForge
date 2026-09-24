@@ -31,7 +31,7 @@ def test_initialize_handshake():
     assert result["serverInfo"]["mcp_schema_version"] == MCP_SCHEMA_VERSION == 1
 
 
-def test_tools_list_exactly_nine_tools():
+def test_tools_list_exactly_ten_tools():
     responses, _ = mcp_exchange(
         [
             {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
@@ -41,7 +41,7 @@ def test_tools_list_exactly_nine_tools():
     tools = responses[1]["result"]["tools"]
     names = {tool["name"] for tool in tools}
     assert names == EXPECTED_TOOL_NAMES
-    assert len(tools) == 9
+    assert len(tools) == 10
     for name in names:
         lower = name.lower()
         assert not any(token in lower for token in FORBIDDEN_TOOL_SUBSTRINGS)
@@ -152,4 +152,4 @@ def test_subprocess_initialize_black_box():
 
 
 def test_tool_specs_count_matches_list():
-    assert len(TOOL_SPECS) == 9
+    assert len(TOOL_SPECS) == 10

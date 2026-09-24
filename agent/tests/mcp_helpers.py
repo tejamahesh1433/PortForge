@@ -23,6 +23,7 @@ FIXTURE_STACK = _REPO_ROOT / "fixtures" / "sample-stack"
 EXPECTED_TOOL_NAMES = frozenset(
     {
         "portforge_capabilities",
+        "portforge_workspace_discover",
         "portforge_project_inspect",
         "portforge_project_plan",
         "portforge_project_provision",
@@ -33,6 +34,26 @@ EXPECTED_TOOL_NAMES = frozenset(
         "portforge_allocation_release",
     }
 )
+
+WORKSPACE_FIXTURES_ROOT = _REPO_ROOT / "fixtures" / "workspace"
+
+WORKSPACE_FIXTURE_DIRS = {
+    "A": "A-simple-web",
+    "B": "B-full-stack",
+    "C": "C-compose-only",
+    "D": "D-dotenv-only",
+    "E": "E-kubernetes",
+    "F": "F-mixed-compose-dotenv",
+    "G": "G-with-manifest",
+    "H": "H-contradictory",
+    "I": "I-malformed",
+    "J": "J-monorepo",
+}
+
+WORKSPACE_FIXTURE_SECRETS = {
+    "A": ("supersecret-db-pass", "sk-live-should-never-leak", "enroll-tok-fixture"),
+    "D": ("should-not-appear", "sk-never-serialize"),
+}
 
 FORBIDDEN_TOOL_SUBSTRINGS = ("shell", "execute", "run", "bash", "cmd", "powershell", "http", "sql")
 
@@ -210,3 +231,32 @@ def mcp_subprocess_exchange(request_line: str, *, central_url: str = "http://cen
 
 def tool_error_code(payload: dict) -> str:
     return payload["error"]["code"]
+
+
+def workspace_fixture_path(fixture_id: str) -> Path:
+    directory = WORKSPACE_FIXTURE_DIRS[fixture_id]
+    return WORKSPACE_FIXTURES_ROOT / directory
+
+
+def normalize_discovery_payload(payload: dict) -> dict:
+    """Strip nondeterministic fields for CLI/MCP parity comparisons."""
+    normalized = json.loads(json.dumps(payload))
+    normalized.pop("duration_ms", None)
+    normalized.pop("central_error", None)
+    normalized.pop("workspace_fingerprint", None)
+    normalized.pop("files_considered", None)
+    normalized.pop("ignored_directories", None)
+    return normalized
+
+
+def discovery_service_ports(payload: dict) -> dict[str, set[int]]:
+    ports_by_service: dict[str, set[int]] = {}
+    for service in payload.get("services") or []:
+        name = service["name"]
+        host_ports = {
+            req["port"]
+            for req in service.get("port_requirements") or []
+            if req.get("role") == "host" and req.get("port") is not None
+        }
+        ports_by_service[name] = host_ports
+    return ports_by_service
