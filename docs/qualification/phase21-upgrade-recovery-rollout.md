@@ -63,6 +63,9 @@ Phase 20 disposable physical (WSL systemd-user + Windows Scheduled Task) already
 | Dashboard | **168 PASS** |
 | Service (gen+ops) | **79 PASS** |
 | Typecheck | PASS |
+| Lint (dashboard eslint) | PASS (0 errors; 1 pre-existing warning) |
+| Lint (Phase 21 backend ruff scope) | PASS |
+| Build (dashboard) | PASS |
 | Doctor RO | PASS |
 
 ---
