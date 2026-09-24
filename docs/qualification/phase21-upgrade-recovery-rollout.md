@@ -2,7 +2,10 @@
 
 **Date:** 2026-09-24  
 **Branch:** `feature/upgrade-recovery-rollout`  
-**Base:** Phase 20 freeze `114b8daebd85d8cbbc162b9e95656adaa2eb3dce` (tree `4168b87c0fe4e770fe05f1b16a2a6ce095cf2167`)
+**Base:** Phase 20 freeze `114b8daebd85d8cbbc162b9e95656adaa2eb3dce` (tree `4168b87c0fe4e770fe05f1b16a2a6ce095cf2167`)  
+**Final HEAD:** `0bdfee7ed6daf6f04e5d4298dae894fddfa49761`  
+**Final tree:** `2a724a71e8d4ae828027ff549a6ba424fcfc9f7a`  
+**Working tree:** CLEAN
 
 Development / disposable qualification only. No production mutation. No public version bump. No DB migration.
 
