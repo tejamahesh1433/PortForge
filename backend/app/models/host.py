@@ -72,6 +72,12 @@ class Host(Base, TimestampMixin):
     upgrades: Mapped[list["HostUpgrade"]] = relationship(
         "HostUpgrade", back_populates="host", cascade="all, delete-orphan"
     )
+    deployments: Mapped[list["HostDeployment"]] = relationship(
+        "HostDeployment", back_populates="host", cascade="all, delete-orphan"
+    )
+    deployment_revisions: Mapped[list["DeploymentRevision"]] = relationship(
+        "DeploymentRevision", back_populates="host", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         Index("ix_hosts_hostname", "hostname"),
