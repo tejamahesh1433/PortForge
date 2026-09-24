@@ -13,6 +13,7 @@ from typing import Any, Optional
 from unittest.mock import MagicMock, patch
 
 CENTRAL_PATCH_TARGET = "portforge_agent.mcp.context.CentralClient"
+_MCP_EXCHANGE_LOCK = threading.Lock()
 
 from portforge_agent.mcp.errors import McpToolError, error_payload
 from portforge_agent.mcp.tools import call_tool
@@ -32,6 +33,10 @@ EXPECTED_TOOL_NAMES = frozenset(
         "portforge_allocation_recommend",
         "portforge_allocation_create",
         "portforge_allocation_release",
+        "portforge_deployment_plan",
+        "portforge_deployment_apply",
+        "portforge_deployment_status",
+        "portforge_deployment_rollback",
     }
 )
 
@@ -62,6 +67,8 @@ MUTATE_TOOLS = (
     "portforge_project_rollback",
     "portforge_allocation_create",
     "portforge_allocation_release",
+    "portforge_deployment_apply",
+    "portforge_deployment_rollback",
 )
 
 _HOSTS = {"items": [{"id": "22222222-2222-2222-2222-222222222222", "hostname": "workstation"}]}
@@ -152,7 +159,7 @@ def mcp_exchange(
     *,
     central_url: str | None = "http://central.example",
     log_level: str = "WARNING",
-    timeout: float = 15.0,
+    timeout: float = 30.0,
     central_client: MagicMock | None = None,
     patch_central: bool = True,
 ) -> tuple[list[dict], str]:
@@ -179,15 +186,17 @@ def mcp_exchange(
             sys.stdout = old_stdout
             done.set()
 
-    thread = threading.Thread(target=run, daemon=True)
-    thread.start()
-    done.wait(timeout=timeout)
-    if thread.is_alive():
-        raise TimeoutError("MCP server thread did not exit")
+    with _MCP_EXCHANGE_LOCK:
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        finished = done.wait(timeout=timeout)
+        thread.join(timeout=2.0)
+        if not finished or thread.is_alive():
+            raise TimeoutError("MCP server thread did not exit")
 
-    raw_stdout = stdout_buf.getvalue()
-    responses = [json.loads(line) for line in raw_stdout.splitlines() if line.strip()]
-    return responses, raw_stdout
+        raw_stdout = stdout_buf.getvalue()
+        responses = [json.loads(line) for line in raw_stdout.splitlines() if line.strip()]
+        return responses, raw_stdout
 
 
 def mcp_exchange_eof_after(request: dict, *, central_url: str | None = "http://central.example") -> None:

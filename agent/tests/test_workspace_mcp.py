@@ -32,7 +32,7 @@ def test_tools_list_includes_workspace_discover_and_phase15_tools():
     names = {tool["name"] for tool in responses[1]["result"]["tools"]}
     assert names == EXPECTED_TOOL_NAMES
     assert "portforge_workspace_discover" in names
-    assert len(names) == 10
+    assert len(names) == 14
 
 
 def test_mcp_exchange_workspace_discover():

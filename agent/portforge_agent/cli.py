@@ -951,6 +951,227 @@ def _cmd_allocation_verify(args: argparse.Namespace) -> int:
     return 0
     
 
+def _print_central_result_error(result, args: argparse.Namespace) -> None:
+    if isinstance(result.data, dict):
+        payload = result.data
+    else:
+        payload = {"error": {"code": "CENTRAL_UNAVAILABLE", "message": result.error or "Central request failed."}}
+    _print_allocation_error(payload, args)
+
+
+def _cmd_deployment_plan(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from .deployment.central_plan import build_deployment_plan_request, resolve_deployment_project
+
+    client, url_error = _allocation_client(args)
+    if url_error:
+        if args.json:
+            print(json.dumps({"error": {"code": "INVALID_REQUEST", "message": url_error, "details": []}}, indent=2))
+        else:
+            print(f"Error: {url_error}", file=sys.stderr)
+        return 2
+
+    if not args.environment:
+        _print_targets_error(
+            TargetsError("TARGET_REQUIRED", "--environment is required for deployment planning."),
+            args,
+        )
+        return 2
+
+    project_root = Path(args.project_root).resolve() if args.project_root else Path.cwd().resolve()
+    url, _ = _resolve_central_base_url(args)
+    try:
+        target_payload = plan_for_target(
+            project_root=project_root,
+            environment=args.environment,
+            target=getattr(args, "target", None),
+            target_host_id=getattr(args, "target_host_id", None),
+            central_url=url,
+        )
+        project = resolve_deployment_project(project_root)
+    except TargetsError as exc:
+        _print_targets_error(exc, args)
+        return 2
+
+    model = discover_workspace(project_root, central_url=url, include_local_runtime=False)
+    plan_body = build_deployment_plan_request(
+        target_payload,
+        project=project,
+        workspace_fingerprint=model.workspace_fingerprint,
+    )
+    central_result = client.plan_deployment(plan_body)
+    if not central_result.success:
+        _print_central_result_error(central_result, args)
+        return 1
+
+    output = {
+        "target_plan": target_payload,
+        "deployment_plan": central_result.data,
+        "project": project,
+    }
+    if args.json:
+        print(json.dumps(output, indent=2))
+    else:
+        host = target_payload.get("host") or {}
+        print(
+            f"Deployment plan for {project} ({args.environment}/{target_payload.get('target')} "
+            f"on {host.get('hostname') or host.get('id')})\n"
+        )
+        print(f"  Central plan_hash: {central_result.data.get('plan_hash')}")
+        print(f"  Target plan_id: {target_payload.get('plan_id')}")
+        for row in target_payload.get("services") or []:
+            print(
+                f"  {row.get('service'):<20} internal={row.get('internal_port')} "
+                f"host={row.get('host_port')} reason={row.get('reason_code')}"
+            )
+    return 0
+
+
+def _cmd_deployment_apply(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from .deployment.central_plan import (
+        ingress_json_from_target_bindings,
+        ports_json_from_target_services,
+        resolve_deployment_project,
+    )
+
+    client, url_error = _allocation_client(args)
+    if url_error:
+        if args.json:
+            print(json.dumps({"error": {"code": "INVALID_REQUEST", "message": url_error, "details": []}}, indent=2))
+        else:
+            print(f"Error: {url_error}", file=sys.stderr)
+        return 2
+
+    if not args.environment:
+        _print_targets_error(
+            TargetsError("TARGET_REQUIRED", "--environment is required for deployment apply."),
+            args,
+        )
+        return 2
+
+    project_root = Path(args.project_root).resolve() if args.project_root else Path.cwd().resolve()
+    manifest_path = discover_manifest_path(str(project_root), walk_up=False)
+    if manifest_path is None:
+        message = "portforge.yml is required to resolve deployment target."
+        if args.json:
+            print(json.dumps({"error": {"code": "MANIFEST_INVALID", "message": message, "details": []}}, indent=2))
+        else:
+            print(f"Error: {message}", file=sys.stderr)
+        return 2
+
+    try:
+        manifest = load_and_validate_manifest(manifest_path)
+        target_ref = resolve_target(
+            manifest,
+            args.environment,
+            target=getattr(args, "target", None),
+            target_host_id=getattr(args, "target_host_id", None),
+        )
+    except ManifestError as exc:
+        _print_manifest_error(exc, args)
+        return 2
+    except TargetsError as exc:
+        _print_targets_error(exc, args)
+        return 2
+
+    url, _ = _resolve_central_base_url(args)
+    try:
+        target_payload = plan_for_target(
+            project_root=project_root,
+            environment=args.environment,
+            target=target_ref.alias,
+            target_host_id=target_ref.host_id,
+            central_url=url,
+        )
+        project = resolve_deployment_project(project_root)
+    except TargetsError as exc:
+        _print_targets_error(exc, args)
+        return 2
+
+    model = discover_workspace(project_root, central_url=url, include_local_runtime=False)
+    namespaced_request_id = namespace_request_id(args.environment, target_ref.alias, args.request_id)
+    body: dict = {
+        "host_id": target_ref.host_id,
+        "project": project,
+        "environment": args.environment,
+        "target_alias": target_ref.alias,
+        "request_id": namespaced_request_id,
+        "plan_hash": args.plan_hash,
+        "package_uri": args.package_uri,
+        "package_sha256": args.package_sha256,
+        "package_manifest_sha256": args.package_manifest_sha256,
+        "workspace_fingerprint": model.workspace_fingerprint,
+    }
+    ports_json = ports_json_from_target_services(target_payload.get("services") or [])
+    ingress_json = ingress_json_from_target_bindings(target_payload.get("ingress") or [])
+    if ports_json is not None:
+        body["ports_json"] = ports_json
+    if ingress_json is not None:
+        body["ingress_json"] = ingress_json
+
+    result = client.create_deployment(body)
+    if not result.success:
+        _print_central_result_error(result, args)
+        return 1
+
+    payload = result.data
+    payload["namespaced_request_id"] = namespaced_request_id
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(f"Deployment created: {payload.get('id')} state={payload.get('state')}")
+        print(f"  request_id: {namespaced_request_id}")
+    return 0
+
+
+def _cmd_deployment_status(args: argparse.Namespace) -> int:
+    client, url_error = _allocation_client(args)
+    if url_error:
+        if args.json:
+            print(json.dumps({"error": {"code": "INVALID_REQUEST", "message": url_error, "details": []}}, indent=2))
+        else:
+            print(f"Error: {url_error}", file=sys.stderr)
+        return 2
+
+    result = client.get_deployment(args.id)
+    if not result.success:
+        _print_central_result_error(result, args)
+        return 1
+
+    if args.json:
+        print(json.dumps(result.data, indent=2))
+    else:
+        data = result.data
+        print(f"Deployment {data.get('id')}: state={data.get('state')} project={data.get('project')}")
+        print(f"  environment: {data.get('environment')} request_id: {data.get('request_id')}")
+    return 0
+
+
+def _cmd_deployment_rollback(args: argparse.Namespace) -> int:
+    client, url_error = _allocation_client(args)
+    if url_error:
+        if args.json:
+            print(json.dumps({"error": {"code": "INVALID_REQUEST", "message": url_error, "details": []}}, indent=2))
+        else:
+            print(f"Error: {url_error}", file=sys.stderr)
+        return 2
+
+    result = client.rollback_deployment(args.id, args.request_id)
+    if not result.success:
+        _print_central_result_error(result, args)
+        return 1
+
+    if args.json:
+        print(json.dumps(result.data, indent=2))
+    else:
+        data = result.data
+        print(f"Rollback deployment created: {data.get('id')} state={data.get('state')}")
+    return 0
+
+
 def _cmd_allocation_list(args: argparse.Namespace) -> int:
     client, error = _allocation_client(args)
     if error:
@@ -2211,6 +2432,53 @@ def build_parser() -> argparse.ArgumentParser:
     allocation_release_parser.add_argument("--url", type=str, default=None)
     allocation_release_parser.add_argument("--json", action="store_true")
     allocation_release_parser.set_defaults(func=_cmd_allocation_release)
+
+    deployment_parser = subparsers.add_parser(
+        "deployment", help="Plan, apply, inspect, or rollback Central deployments (Phase 18)"
+    )
+    deployment_subparsers = deployment_parser.add_subparsers(dest="deployment_command", required=True)
+
+    deployment_plan_parser = deployment_subparsers.add_parser(
+        "plan", help="Build a target plan and Central deployment plan (read-only)"
+    )
+    deployment_plan_parser.add_argument("--environment", type=str, required=True)
+    deployment_plan_parser.add_argument("--target", type=str, default=None)
+    deployment_plan_parser.add_argument("--target-host-id", type=str, default=None)
+    deployment_plan_parser.add_argument("--project-root", type=str, default=None)
+    deployment_plan_parser.add_argument("--url", type=str, default=None)
+    deployment_plan_parser.add_argument("--json", action="store_true")
+    deployment_plan_parser.set_defaults(func=_cmd_deployment_plan)
+
+    deployment_apply_parser = deployment_subparsers.add_parser(
+        "apply", help="Create an APPROVED deployment on Central"
+    )
+    deployment_apply_parser.add_argument("--request-id", type=str, required=True)
+    deployment_apply_parser.add_argument("--environment", type=str, required=True)
+    deployment_apply_parser.add_argument("--target", type=str, default=None)
+    deployment_apply_parser.add_argument("--target-host-id", type=str, default=None)
+    deployment_apply_parser.add_argument("--project-root", type=str, default=None)
+    deployment_apply_parser.add_argument("--package-uri", type=str, required=True)
+    deployment_apply_parser.add_argument("--package-sha256", type=str, required=True)
+    deployment_apply_parser.add_argument("--package-manifest-sha256", type=str, required=True)
+    deployment_apply_parser.add_argument("--plan-hash", type=str, required=True)
+    deployment_apply_parser.add_argument("--url", type=str, default=None)
+    deployment_apply_parser.add_argument("--json", action="store_true")
+    deployment_apply_parser.set_defaults(func=_cmd_deployment_apply)
+
+    deployment_status_parser = deployment_subparsers.add_parser("status", help="Get deployment state from Central")
+    deployment_status_parser.add_argument("id", type=str)
+    deployment_status_parser.add_argument("--url", type=str, default=None)
+    deployment_status_parser.add_argument("--json", action="store_true")
+    deployment_status_parser.set_defaults(func=_cmd_deployment_status)
+
+    deployment_rollback_parser = deployment_subparsers.add_parser(
+        "rollback", help="Request rollback of a deployment to the previous known-good revision"
+    )
+    deployment_rollback_parser.add_argument("id", type=str)
+    deployment_rollback_parser.add_argument("--request-id", type=str, required=True)
+    deployment_rollback_parser.add_argument("--url", type=str, default=None)
+    deployment_rollback_parser.add_argument("--json", action="store_true")
+    deployment_rollback_parser.set_defaults(func=_cmd_deployment_rollback)
 
     # --- Phase 8B: project manifest ----------------------------------------
     project_parser = subparsers.add_parser(

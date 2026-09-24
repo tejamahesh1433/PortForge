@@ -15,6 +15,12 @@ from .context import load_manifest_and_host, make_client, resolve_manifest_path,
 from .errors import McpToolError, map_exception
 from .plans import compute_plan_fingerprint, save_plan, verify_plan_fresh
 from ..targets.models import TargetsError
+from ..deployment.central_plan import (
+    build_deployment_plan_request,
+    ingress_json_from_target_bindings,
+    ports_json_from_target_services,
+    resolve_deployment_project,
+)
 from ..targets.plan import plan_for_target
 from ..targets.request_id import namespace_request_id
 from ..targets.resolve import resolve_target
@@ -508,6 +514,137 @@ def _handle_allocation_release(arguments: dict, server_defaults: dict) -> dict:
     return result.data
 
 
+def _handle_deployment_plan(arguments: dict, server_defaults: dict) -> dict:
+    environment = arguments.get("environment")
+    if not environment:
+        raise McpToolError("TARGET_REQUIRED", "environment is required for deployment planning.")
+    project_root = resolve_project_root(arguments.get("project_root"), arguments.get("manifest_path"))
+    central_url = _url(arguments, server_defaults)
+    try:
+        target_payload = plan_for_target(
+            project_root=project_root,
+            environment=environment,
+            target=arguments.get("target"),
+            target_host_id=arguments.get("target_host_id"),
+            central_url=central_url,
+        )
+        project = resolve_deployment_project(project_root)
+    except TargetsError as exc:
+        raise map_exception(exc)
+
+    model = discover_workspace(project_root, central_url=central_url, include_local_runtime=False)
+    plan_body = build_deployment_plan_request(
+        target_payload,
+        project=project,
+        workspace_fingerprint=model.workspace_fingerprint,
+    )
+    client = make_client(central_url)
+    result = client.plan_deployment(plan_body)
+    _raise_central_failure(result)
+    return {
+        "target_plan": target_payload,
+        "deployment_plan": result.data,
+        "project": project,
+    }
+
+
+def _handle_deployment_apply(arguments: dict, server_defaults: dict) -> dict:
+    environment = arguments.get("environment")
+    request_id = arguments.get("request_id")
+    plan_hash = arguments.get("plan_hash")
+    package_uri = arguments.get("package_uri")
+    package_sha256 = arguments.get("package_sha256")
+    package_manifest_sha256 = arguments.get("package_manifest_sha256")
+    required = {
+        "environment": environment,
+        "request_id": request_id,
+        "plan_hash": plan_hash,
+        "package_uri": package_uri,
+        "package_sha256": package_sha256,
+        "package_manifest_sha256": package_manifest_sha256,
+    }
+    missing = [key for key, value in required.items() if not value]
+    if missing:
+        raise McpToolError("INVALID_PARAMS", f"Missing required fields: {', '.join(missing)}.")
+
+    project_root = resolve_project_root(arguments.get("project_root"), arguments.get("manifest_path"))
+    try:
+        manifest_path = resolve_manifest_path(str(project_root), arguments.get("manifest_path"))
+        manifest = load_and_validate_manifest(manifest_path)
+        target_ref = resolve_target(
+            manifest,
+            environment,
+            target=arguments.get("target"),
+            target_host_id=arguments.get("target_host_id"),
+        )
+    except ManifestError as exc:
+        raise map_exception(exc)
+    except TargetsError as exc:
+        raise map_exception(exc)
+
+    central_url = _url(arguments, server_defaults)
+    try:
+        target_payload = plan_for_target(
+            project_root=project_root,
+            environment=environment,
+            target=target_ref.alias,
+            target_host_id=target_ref.host_id,
+            central_url=central_url,
+        )
+        project = resolve_deployment_project(project_root)
+    except TargetsError as exc:
+        raise map_exception(exc)
+
+    model = discover_workspace(project_root, central_url=central_url, include_local_runtime=False)
+    namespaced_request_id = namespace_request_id(environment, target_ref.alias, request_id)
+    body: dict = {
+        "host_id": target_ref.host_id,
+        "project": project,
+        "environment": environment,
+        "target_alias": target_ref.alias,
+        "request_id": namespaced_request_id,
+        "plan_hash": plan_hash,
+        "package_uri": package_uri,
+        "package_sha256": package_sha256,
+        "package_manifest_sha256": package_manifest_sha256,
+        "workspace_fingerprint": model.workspace_fingerprint,
+    }
+    ports_json = ports_json_from_target_services(target_payload.get("services") or [])
+    ingress_json = ingress_json_from_target_bindings(target_payload.get("ingress") or [])
+    if ports_json is not None:
+        body["ports_json"] = ports_json
+    if ingress_json is not None:
+        body["ingress_json"] = ingress_json
+
+    client = make_client(central_url)
+    result = client.create_deployment(body)
+    _raise_central_failure(result)
+    payload = dict(result.data)
+    payload["namespaced_request_id"] = namespaced_request_id
+    return payload
+
+
+def _handle_deployment_status(arguments: dict, server_defaults: dict) -> dict:
+    deployment_id = arguments.get("deployment_id") or arguments.get("id")
+    if not deployment_id:
+        raise McpToolError("INVALID_PARAMS", "deployment_id is required.")
+    client = make_client(_url(arguments, server_defaults))
+    result = client.get_deployment(deployment_id)
+    _raise_central_failure(result)
+    return result.data
+
+
+def _handle_deployment_rollback(arguments: dict, server_defaults: dict) -> dict:
+    deployment_id = arguments.get("deployment_id") or arguments.get("id")
+    request_id = arguments.get("request_id")
+    if not deployment_id or not request_id:
+        raise McpToolError("INVALID_PARAMS", "deployment_id and request_id are required.")
+    client = make_client(_url(arguments, server_defaults))
+    result = client.rollback_deployment(deployment_id, request_id)
+    _raise_central_failure(result)
+    return result.data
+
+
 TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "portforge_capabilities",
@@ -673,6 +810,90 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "additionalProperties": False,
         },
         "handler": _handle_allocation_release,
+    },
+    {
+        "name": "portforge_deployment_plan",
+        "description": "Build a target plan and Central deployment plan preview (read-only).",
+        "classification": PLAN,
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_root": {"type": "string"},
+                "manifest_path": {"type": "string"},
+                "central_url": {"type": "string"},
+                "environment": {"type": "string"},
+                "target": {"type": "string"},
+                "target_host_id": {"type": "string"},
+            },
+            "required": ["environment"],
+            "additionalProperties": False,
+        },
+        "handler": _handle_deployment_plan,
+    },
+    {
+        "name": "portforge_deployment_apply",
+        "description": "Create an APPROVED deployment on Central. Requires confirm_mutate.",
+        "classification": MUTATE,
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "confirm_mutate": {"type": "boolean"},
+                "request_id": {"type": "string"},
+                "environment": {"type": "string"},
+                "target": {"type": "string"},
+                "target_host_id": {"type": "string"},
+                "project_root": {"type": "string"},
+                "manifest_path": {"type": "string"},
+                "central_url": {"type": "string"},
+                "plan_hash": {"type": "string"},
+                "package_uri": {"type": "string"},
+                "package_sha256": {"type": "string"},
+                "package_manifest_sha256": {"type": "string"},
+            },
+            "required": [
+                "request_id",
+                "confirm_mutate",
+                "environment",
+                "plan_hash",
+                "package_uri",
+                "package_sha256",
+                "package_manifest_sha256",
+            ],
+            "additionalProperties": False,
+        },
+        "handler": _handle_deployment_apply,
+    },
+    {
+        "name": "portforge_deployment_status",
+        "description": "Read deployment state from Central.",
+        "classification": READ,
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "deployment_id": {"type": "string"},
+                "central_url": {"type": "string"},
+            },
+            "required": ["deployment_id"],
+            "additionalProperties": False,
+        },
+        "handler": _handle_deployment_status,
+    },
+    {
+        "name": "portforge_deployment_rollback",
+        "description": "Request rollback of a deployment to the previous known-good revision. Requires confirm_mutate.",
+        "classification": MUTATE,
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "confirm_mutate": {"type": "boolean"},
+                "deployment_id": {"type": "string"},
+                "request_id": {"type": "string"},
+                "central_url": {"type": "string"},
+            },
+            "required": ["deployment_id", "request_id", "confirm_mutate"],
+            "additionalProperties": False,
+        },
+        "handler": _handle_deployment_rollback,
     },
 ]
 

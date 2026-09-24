@@ -54,6 +54,10 @@ def build_contract() -> dict:
             "workspace_plan": True,
             "environment_targets": True,
             "ingress_plan": True,
+            "deployment_plan": True,
+            "deployment_apply": True,
+            "deployment_status": True,
+            "deployment_rollback": True,
         },
         "cli_aliases": {
             "capabilities": "agent-contract",
