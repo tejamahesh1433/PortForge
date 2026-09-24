@@ -190,6 +190,25 @@ Guide: [`workspace-discovery.md`](workspace-discovery.md).
 
 ---
 
+## Environments and targets (Phase 17)
+
+Additive args on existing tools (MCP schema remains 1):
+
+| Tool | New optional args |
+|------|-------------------|
+| `portforge_project_plan` | `environment`, `target`, `target_host_id` |
+| `portforge_project_provision` | same + existing `confirm_mutate` |
+
+Capabilities: `environment_targets`, `ingress_plan`.
+
+Errors: `PLAN_TARGET_MISMATCH`, `UNKNOWN_TARGET`, `INVALID_HOST_ID`.
+
+Guide: [`environments-and-targets.md`](environments-and-targets.md).
+
+Windows/Mac agents must pass the **deployment** target host — PortForge checks that host, not the caller machine.
+
+---
+
 ## Platform notes
 
 | Platform | Notes |

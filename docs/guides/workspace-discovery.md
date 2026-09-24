@@ -131,3 +131,10 @@ It must **not** return passwords, API keys, tokens, or entire `.env` files.
 - No automatic `containerPort` / Service `port` / `targetPort` mutation
 - No AI inside discovery (deterministic parsers only)
 - Bounded scan (depth/file caps) — not a full-repo semantic indexer
+
+## Next: environments and targets
+
+After discovery yields INTERNAL ports, use Phase 17 target-aware planning so
+Windows/Mac development and Lenovo/HP production get independent HOST ports.
+
+See [`environments-and-targets.md`](environments-and-targets.md).
