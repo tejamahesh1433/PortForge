@@ -73,6 +73,7 @@ from . import doctor as _doctor
 from .agent_contract import build_contract
 from .workflow import WorkflowError, apply_workflow, get_workflow_status, prepare_workflow
 from .project_init import create_manifest, render_manifest
+from .workspace import discover_workspace, plan_workspace, workspace_to_json
 
 _MIN_COLUMN_WIDTH = 8
 _COLUMN_GAP = 2
@@ -1259,7 +1260,88 @@ def _cmd_project_provision(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_project_discover(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    root = Path(args.project_root) if args.project_root else Path(args.path or ".").resolve()
+    url, _error = _resolve_central_base_url(args)
+    try:
+        model = discover_workspace(root, central_url=url, include_local_runtime=not args.no_local_runtime)
+    except FileNotFoundError as exc:
+        if args.json:
+            print(json.dumps({"error": {"code": "PROJECT_ROOT_NOT_FOUND", "message": str(exc), "details": []}}, indent=2))
+        else:
+            print(f"Error: {exc}", file=sys.stderr)
+        return 2
+
+    payload = workspace_to_json(model)
+    if args.json:
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    print(f"Workspace discovery for {root}\n")
+    print(f"  Services: {len(model.services)}")
+    print(f"  Conflicts: {len(model.conflicts)}")
+    print(f"  Files parsed: {model.files_parsed}/{model.files_considered}")
+    print(f"  Fingerprint: {model.workspace_fingerprint}")
+    if model.central_available:
+        print("  Central: available")
+    elif url:
+        print(f"  Central: unavailable ({model.central_error or 'unknown'})")
+    for service in model.services:
+        host_ports = [
+            req.port
+            for req in service.port_requirements
+            if req.role == "host" and req.port is not None
+        ]
+        if host_ports:
+            print(f"  - {service.name}: host ports {sorted(set(host_ports))}")
+    for conflict in model.conflicts:
+        print(f"  ! [{conflict.kind}] {conflict.message}")
+    return 0
+
+
 def _cmd_project_plan(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    use_workspace = getattr(args, "workspace", False)
+    manifest_path = _project_manifest_path(args) or discover_manifest_path(walk_up=True)
+    if use_workspace or manifest_path is None:
+        root = Path(args.project_root) if getattr(args, "project_root", None) else Path.cwd().resolve()
+        if manifest_path is not None and getattr(args, "project_root", None) is None:
+            root = manifest_path.parent.resolve()
+        url, _error = _resolve_central_base_url(args)
+        model = discover_workspace(root, central_url=url, include_local_runtime=True)
+        client = None
+        host = None
+        if url:
+            client, url_error = _allocation_client(args)
+            if client is not None and model.existing_manifest:
+                host, host_error, _code = resolve_host_ref(client, model.existing_manifest.get("host") or "")
+                if host_error:
+                    host = None
+        plan = plan_workspace(model, client=client, host=host)
+        payload = {
+            "schema_version": 1,
+            "committed": False,
+            "mode": "workspace",
+            "project_root": str(root),
+            "discovery": workspace_to_json(model),
+            "plan": plan,
+        }
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        else:
+            print(f"Workspace plan for {root} (advisory only -- nothing reserved)\n")
+            for row in plan.get("services") or []:
+                proposed = row.get("proposed_port")
+                current = row.get("current_port")
+                reason = (row.get("reason") or {}).get("code")
+                print(
+                    f"  {row.get('service'):<20} current={current} proposed={proposed} reason={reason}"
+                )
+        return 0
+
     client, manifest, host, error_code = _load_manifest_and_host(args)
     if error_code is not None:
         return error_code
@@ -1964,7 +2046,32 @@ def build_parser() -> argparse.ArgumentParser:
         "plan", help="Show advisory candidate ports for a manifest (non-mutating)"
     )
     _add_manifest_arg(project_plan_parser)
+    project_plan_parser.add_argument(
+        "--workspace",
+        action="store_true",
+        help="Discover the workspace statically and build a coordinated port plan",
+    )
+    project_plan_parser.add_argument("--project-root", type=str, default=None)
     project_plan_parser.set_defaults(func=_cmd_project_plan)
+
+    project_discover_parser = project_subparsers.add_parser(
+        "discover", help="Statically discover services, ports, and conflicts in a workspace"
+    )
+    project_discover_parser.add_argument(
+        "path",
+        nargs="?",
+        default=None,
+        help="Project root directory (default: current directory)",
+    )
+    project_discover_parser.add_argument("--project-root", type=str, default=None)
+    project_discover_parser.add_argument("--url", type=str, default=None, help="Central server base URL")
+    project_discover_parser.add_argument("--json", action="store_true")
+    project_discover_parser.add_argument(
+        "--no-local-runtime",
+        action="store_true",
+        help="Skip local port/reservation enrichment",
+    )
+    project_discover_parser.set_defaults(func=_cmd_project_discover)
 
     project_allocate_parser = project_subparsers.add_parser(
         "allocate", help="Atomically allocate every port in a manifest (calls Phase 8A's allocation API)"

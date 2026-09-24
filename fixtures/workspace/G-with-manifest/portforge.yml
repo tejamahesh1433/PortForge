@@ -1,0 +1,13 @@
+version: 1
+project: sample-stack
+target:
+  host: workstation
+ports:
+  frontend:
+    purpose: frontend
+    protocol: tcp
+    preferred: 3000
+  api:
+    purpose: api
+    protocol: tcp
+    preferred: 8000

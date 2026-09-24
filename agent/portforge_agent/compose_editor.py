@@ -79,6 +79,11 @@ def dump_compose(data: Any) -> str:
     return stream.getvalue()
 
 
+def extract_port_entries(value: str) -> Optional[Tuple[Optional[str], Optional[str], int, str]]:
+    """Public helper for static Compose port parsing (Phase 16 workspace discovery)."""
+    return _parse_short_entry(value)
+
+
 def _parse_short_entry(value: str) -> Optional[Tuple[Optional[str], Optional[str], int, str]]:
     """Parses Compose's short port syntax into `(ip, host_port, container_port, protocol)`.
 

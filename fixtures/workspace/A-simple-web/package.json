@@ -1,0 +1,6 @@
+{
+  "name": "simple-web",
+  "scripts": {
+    "dev": "next dev -p 3000"
+  }
+}

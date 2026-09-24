@@ -1,0 +1,5 @@
+services:
+  frontend:
+    image: nginx:alpine
+    ports:
+      - "3000:3000"

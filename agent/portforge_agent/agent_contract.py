@@ -50,6 +50,8 @@ def build_contract() -> dict:
             "kubernetes_targetPort_auto": False,
             "mcp": True,
             "doctor": True,
+            "workspace_discover": True,
+            "workspace_plan": True,
         },
         "cli_aliases": {
             "capabilities": "agent-contract",
@@ -63,6 +65,7 @@ def build_contract() -> dict:
         "supported_protocols": list(_SUPPORTED_PROTOCOLS),
         "recommended_workflow": [
             "portforge capabilities --json   # discover contract (alias: agent-contract)",
+            "portforge project discover [<path>] --json   # static workspace discovery when no manifest exists yet",
             "portforge project init --project <name> --host <host> --port <name>:<purpose>[:protocol]  # only if no portforge.yml exists yet",
             "portforge project inspect [<manifest>] --json",
             "portforge project validate [<manifest>] --json",
