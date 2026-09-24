@@ -31,7 +31,7 @@ def test_additive_capabilities_present():
     assert caps["kubernetes_containerPort_auto"] is False
     assert caps["kubernetes_service_port_auto"] is False
     assert caps["kubernetes_targetPort_auto"] is False
-    assert caps["mcp"] is False
+    assert caps["mcp"] is True
 
 
 def test_machine_interface_contract_version_unchanged():

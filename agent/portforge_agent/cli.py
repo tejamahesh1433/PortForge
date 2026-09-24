@@ -1381,6 +1381,19 @@ def _cmd_capabilities(args):
     return _cmd_agent_contract(args)
 
 
+def _cmd_mcp_serve(args: argparse.Namespace) -> int:
+    from .mcp.server import run_stdio_server
+
+    logging.basicConfig(
+        level=getattr(logging, args.log_level.upper(), logging.WARNING),
+        stream=sys.stderr,
+        format="%(levelname)s %(name)s: %(message)s",
+        force=True,
+    )
+    run_stdio_server(central_url=args.url, log_level=args.log_level)
+    return 0
+
+
 def _cmd_workflow_prepare(args):
     client,manifest,host,error=_load_manifest_and_host(args)
     if error is not None: return error
@@ -2051,6 +2064,13 @@ def build_parser() -> argparse.ArgumentParser:
     doctor_parser.add_argument("--url", type=str, default=None, help="Central server base URL")
     doctor_parser.add_argument("--json", action="store_true")
     doctor_parser.set_defaults(func=_cmd_doctor)
+
+    mcp_parser = subparsers.add_parser("mcp", help="Model Context Protocol (MCP) server over stdio")
+    mcp_sub = mcp_parser.add_subparsers(dest="mcp_command", required=True)
+    mcp_serve = mcp_sub.add_parser("serve", help="Start PortForge MCP server over stdio")
+    mcp_serve.add_argument("--url", type=str, default=None, help="Default Central server base URL for MCP tools")
+    mcp_serve.add_argument("--log-level", default="WARNING", help="Logging level (stderr only)")
+    mcp_serve.set_defaults(func=_cmd_mcp_serve)
 
     from .cli_agent import add_agent_subparsers
     add_agent_subparsers(subparsers)

@@ -48,7 +48,7 @@ def build_contract() -> dict:
             "kubernetes_containerPort_auto": False,
             "kubernetes_service_port_auto": False,
             "kubernetes_targetPort_auto": False,
-            "mcp": False,
+            "mcp": True,
             "doctor": True,
         },
         "cli_aliases": {
@@ -85,4 +85,9 @@ def build_contract() -> dict:
             "'workflow apply's JSON result includes recovery.rollback_command and recovery.release_command. "
             "If config was applied and needs undoing, roll it back BEFORE releasing the allocation."
         ),
+        "mcp": {
+            "schema_version": 1,
+            "transport": "stdio",
+            "command": "portforge mcp serve",
+        },
     }
