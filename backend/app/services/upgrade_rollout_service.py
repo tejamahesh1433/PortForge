@@ -206,7 +206,7 @@ def create_rollout(
                 upgrade_id=upgrade.id,
                 state=upgrade.state,
             ))
-        except UpgradeError as exc:
+        except UpgradeError:
             # Non-fatal per host (e.g. already has non-terminal upgrade):
             # record as failed disposition without aborting the rollout.
             members.append(RolloutMemberOut(
@@ -424,7 +424,6 @@ def _build_rollout_out(
     total = len(members)
 
     has_failed = failed > 0
-    all_terminal = all(r.state in TERMINAL_STATES for r in rows) if rows else True
     non_terminal = [r for r in rows if r.state not in TERMINAL_STATES]
 
     if non_terminal:

@@ -4,7 +4,6 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 
-import pytest
 
 ADMIN = {"Authorization": "Bearer test-admin-bootstrap-token"}
 
@@ -261,7 +260,6 @@ def _heartbeat_online(client, agent_token, host_id):
 
 def test_cancel_waiting_for_agent_upgrade(client, db):
     """WAITING_FOR_AGENT upgrade must be cancellable."""
-    from app.models.host_upgrade import HostUpgrade
     from app.models.host import Host
 
     _, host_id = _enroll(client)

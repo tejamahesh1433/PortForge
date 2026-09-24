@@ -4,7 +4,6 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 
-import pytest
 
 ADMIN = {"Authorization": "Bearer test-admin-bootstrap-token"}
 
@@ -104,7 +103,6 @@ def _advance_upgrade_to_succeeded(client, agent_token: str, upgrade_id: str) -> 
 
 def test_create_rollout_creates_rows_for_all_hosts(client, db):
     """With canary_size=0, concurrency=3 and 3 hosts, all 3 get upgrade rows."""
-    from app.models.host_upgrade import HostUpgrade
 
     tokens_and_ids = [_enroll(client, hostname=f"h{i}") for i in range(3)]
     host_ids = [hid for _, hid in tokens_and_ids]
@@ -134,7 +132,6 @@ def test_create_rollout_with_explicit_request_id(client):
 
 def test_create_rollout_idempotent_same_request_id(client, db):
     """Resubmitting the same request_id returns the existing row, not a new one."""
-    from app.models.host_upgrade import HostUpgrade
 
     _, host_id = _enroll(client)
     rid = "idem-rollout-" + uuid.uuid4().hex[:8]
@@ -156,7 +153,6 @@ def test_create_rollout_idempotent_same_request_id(client, db):
 
 def test_canary_only_first_n_hosts_get_rows(client, db):
     """With canary_size=1 and 3 eligible hosts, only 1 gets an upgrade row."""
-    from app.models.host_upgrade import HostUpgrade
 
     tokens_and_ids = [_enroll(client, hostname=f"canary-h{i}") for i in range(3)]
     host_ids = [hid for _, hid in tokens_and_ids]
@@ -171,7 +167,6 @@ def test_canary_only_first_n_hosts_get_rows(client, db):
 
 def test_advance_after_canary_success_creates_more(client, db):
     """After canary host succeeds, advance must create rows for remaining hosts."""
-    from app.models.host_upgrade import HostUpgrade
 
     tokens_and_ids = [_enroll(client, hostname=f"adv-h{i}") for i in range(3)]
     host_ids = sorted([hid for _, hid in tokens_and_ids])
