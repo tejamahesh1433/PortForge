@@ -7,10 +7,10 @@ on a **different** machine than the deployment target.
 Baseline: Phase 17 freeze `5c1863a` (PortForge **v1.4.0** source).
 Protocol / contract / machine / MCP schema remain **1** if additive.
 
-**SCHEMA GATE (locked for this phase):** durable Central→agent deployment
-orchestration **requires a database migration**. Implementation is **blocked**
-until that schema is approved. See
+**SCHEMA GATE:** **APPROVED WITH AMENDMENTS** — see
 [`deployment-schema-proposal.md`](deployment-schema-proposal.md).
+Implementation may proceed on development Central only; production migration
+is prohibited during Phase 18.
 
 Related: [`environment-targets.md`](environment-targets.md),
 [`workspace-discovery.md`](workspace-discovery.md),
@@ -216,13 +216,12 @@ Share one service layer. Approval = MUTATE gate.
 
 | Question | Answer |
 |----------|--------|
-| Can Windows MCP drive Lenovo Compose with agent-local state only? | **No** — Central is the only cross-host bus |
-| Existing ephemeral job channel? | **No** — only probe/upgrade durable tables + heartbeat pull |
-| Reuse `host_upgrades` / `host_probes`? | **Forbidden** (unrelated semantics) |
 | Migration required? | **YES** |
-| Implementation allowed this phase? | **NO** until schema approved |
+| Tables | `host_deployments` + `deployment_revisions` (**both required**) |
+| Implementation allowed? | **YES** after amended proposal committed |
+| Production migration during Phase 18? | **NO** |
 
-Full proposal: [`deployment-schema-proposal.md`](deployment-schema-proposal.md).
+Details: [`deployment-schema-proposal.md`](deployment-schema-proposal.md).
 
 ---
 
