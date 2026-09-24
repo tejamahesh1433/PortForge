@@ -199,7 +199,7 @@ Structured events (no secrets):
 
 ---
 
-## 11. MCP / CLI (planned surface — not implemented this freeze)
+## 11. MCP / CLI
 
 | CLI | MCP |
 |-----|-----|
@@ -208,7 +208,7 @@ Structured events (no secrets):
 | `portforge deployment status` | `portforge_deployment_status` |
 | `portforge deployment rollback` | `portforge_deployment_rollback` |
 
-Share one service layer. Approval = MUTATE gate.
+Share one service layer. Approval = MUTATE gate (`confirm_mutate` on MCP).
 
 ---
 
@@ -218,27 +218,29 @@ Share one service layer. Approval = MUTATE gate.
 |----------|--------|
 | Migration required? | **YES** |
 | Tables | `host_deployments` + `deployment_revisions` (**both required**) |
-| Implementation allowed? | **YES** after amended proposal committed |
+| Implementation allowed? | **YES** (amended proposal committed) |
 | Production migration during Phase 18? | **NO** |
 
 Details: [`deployment-schema-proposal.md`](deployment-schema-proposal.md).
 
 ---
 
-## 13. What may proceed after schema approval (next phase)
+## 13. Implementation status (development Central only)
 
-1. Alembic migration for `host_deployments` (+ optional revision table)
-2. Heartbeat `pending_deployment` + agent status/transfer APIs (protocol 1 additive)
-3. Agent Compose adapter + local revision store
-4. MCP/CLI tools, tests, disposable Linux E2E, Codex validation
-5. Minimal dashboard read-only only if Central rows exist
+1. Alembic migration for `host_deployments` + `deployment_revisions` — done (dev only)
+2. Heartbeat `pending_deployment` + agent claim/status/health APIs — done (protocol 1 additive)
+3. Agent Compose adapter + local revision store + trusted HTTPS package fetch — done
+4. MCP/CLI tools + unit/service tests + Codex discovery evidence — done
+5. Dashboard read-only — deferred (not required for Phase 18 freeze)
+6. Physical disposable Linux Compose E2E — best-effort / deferred if environment unavailable
 
 ---
 
-## 14. Freeze criteria for *this* Phase 18 gate stop
+## 14. Phase 18 freeze criteria
 
-- Design + schema proposal committed
-- Clean tree
-- No migration applied
-- No production touch
-- Report: **SCHEMA DECISION REQUIRED**
+- Amended schema proposal + migration + Central/agent/MCP implementation committed
+- Clean tree on `feature/deployment-orchestration`
+- Protocol / contract / machine / MCP schema remain **1**
+- No version bump, no release, no production migration/deploy
+- Qualification: suites green; v1.4 agent ignores `pending_deployment` without claiming
+- Report: **PHASE 18 COMPLETE (development)** — not production-ready

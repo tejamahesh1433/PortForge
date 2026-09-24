@@ -280,4 +280,4 @@ allocations or rewrite unrelated config. Preserve Phase 17 separation.
 | Migration required | **YES** |
 | Schema proposal | this document (amended) |
 | Implementation allowed | **YES** (after amended doc committed) |
-| Phase 18 classification | **IMPLEMENTATION IN PROGRESS** |
+| Phase 18 classification | **IMPLEMENTATION COMPLETE (development)** |
