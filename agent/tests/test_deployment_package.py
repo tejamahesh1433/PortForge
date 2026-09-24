@@ -68,6 +68,32 @@ def test_extract_rejects_path_traversal(tmp_path):
         extract_archive_safe(archive_path, tmp_path / "out")
 
 
+def test_extract_rejects_absolute_posix_path(tmp_path):
+    archive_path = tmp_path / "abs.zip"
+    _write_zip(
+        archive_path,
+        {
+            "manifest.json": b'{"files":[],"compose_files":[]}',
+            "/etc/passwd": b"nope",
+        },
+    )
+    with pytest.raises(PackageExtractError, match="absolute path"):
+        extract_archive_safe(archive_path, tmp_path / "out")
+
+
+def test_extract_rejects_absolute_windows_path(tmp_path):
+    archive_path = tmp_path / "winabs.zip"
+    _write_zip(
+        archive_path,
+        {
+            "manifest.json": b'{"files":[],"compose_files":[]}',
+            "C:/Windows/system32/evil.txt": b"nope",
+        },
+    )
+    with pytest.raises(PackageExtractError, match="absolute path"):
+        extract_archive_safe(archive_path, tmp_path / "out")
+
+
 def test_extract_manifest_checksum_mismatch(tmp_path):
     compose = b"services: {}\n"
     archive, _, _ = build_local_package(

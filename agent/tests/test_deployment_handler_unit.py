@@ -106,6 +106,7 @@ def test_successful_flow_applies_and_reports(tmp_path, monkeypatch):
         state="SUCCEEDED",
         failure_code=None,
         failure_reason=None,
+        revision_id="req-1",
     )
 
 

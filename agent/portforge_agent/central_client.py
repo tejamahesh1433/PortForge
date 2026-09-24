@@ -269,6 +269,7 @@ class CentralClient:
         state: str,
         failure_code: Optional[str] = None,
         failure_reason: Optional[str] = None,
+        revision_id: Optional[str] = None,
     ) -> CentralResult:
         """Report a deployment lifecycle transition (token required)."""
         body: Dict[str, Any] = {"claim_token": claim_token, "state": state}
@@ -276,6 +277,8 @@ class CentralClient:
             body["failure_code"] = failure_code
         if failure_reason is not None:
             body["failure_reason"] = failure_reason
+        if revision_id is not None:
+            body["revision_id"] = revision_id
         return self._request("POST", f"/api/agent/deployments/{deployment_id}/status", body=body)
 
     def deployment_health(

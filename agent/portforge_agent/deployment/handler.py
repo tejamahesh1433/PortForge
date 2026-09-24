@@ -92,17 +92,20 @@ def process_pending_deployment(pending: Dict[str, Any], client: Any) -> bool:
         *,
         failure_code: Optional[str] = None,
         failure_reason: Optional[str] = None,
+        revision_id: Optional[str] = None,
     ) -> None:
         if not token:
             return
         try:
-            client.deployment_status(
-                deployment_id,
-                claim_token=token,
-                state=state,
-                failure_code=failure_code,
-                failure_reason=failure_reason,
-            )
+            kwargs: Dict[str, Any] = {
+                "claim_token": token,
+                "state": state,
+                "failure_code": failure_code,
+                "failure_reason": failure_reason,
+            }
+            if revision_id is not None:
+                kwargs["revision_id"] = revision_id
+            client.deployment_status(deployment_id, **kwargs)
         except Exception as exc:
             logger.warning("Could not report deployment status %s: %s", state, exc)
 
@@ -223,7 +226,7 @@ def process_pending_deployment(pending: Dict[str, Any], client: Any) -> bool:
             return _fail("DEPLOYMENT_UNHEALTHY", "Declared health checks failed")
 
         activate_revision(project, environment, deployment_id, revision_id)
-        _status("SUCCEEDED")
+        _status("SUCCEEDED", revision_id=revision_id)
         logger.info(
             "Deployment %s succeeded for %s/%s (revision=%s, health=%s)",
             deployment_id,

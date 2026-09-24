@@ -111,7 +111,13 @@ def fetch_package(
 
 
 def _safe_member_path(dest_dir: Path, member_name: str) -> Path:
-    normalized = member_name.replace("\\", "/").lstrip("/")
+    if not isinstance(member_name, str) or not member_name.strip():
+        raise PackageExtractError("Archive entry name is empty")
+    raw = member_name.replace("\\", "/")
+    # Reject absolute POSIX and Windows-style paths before normalization.
+    if raw.startswith("/") or raw.startswith("//") or (len(raw) >= 3 and raw[1] == ":" and raw[2] == "/"):
+        raise PackageExtractError(f"Archive entry uses absolute path: {member_name!r}")
+    normalized = raw.lstrip("/")
     if not normalized or normalized.startswith("../") or "/../" in f"/{normalized}/":
         raise PackageExtractError(f"Archive entry escapes destination: {member_name!r}")
     target = (dest_dir / normalized).resolve(strict=False)
