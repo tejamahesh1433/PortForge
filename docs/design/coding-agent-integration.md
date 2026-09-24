@@ -1,6 +1,6 @@
 # Coding-Agent Integration
 
-Phase 13 design — provider-neutral machine interface reusing Phase 8D contract and CLI. MCP deferred.
+Phase 13 design — provider-neutral machine interface reusing Phase 8D contract and CLI. MCP implemented in Phase 15 — see [`mcp-integration.md`](mcp-integration.md).
 
 Baseline: `machine_interface.contract_version = 1`, `protocol_version = 1`. Additive capability fields only — no version bump unless shape breaks v1 promises.
 
@@ -70,20 +70,16 @@ CLI prints one JSON object to stdout on `--json` failure paths; exit codes follo
     "kubernetes_containerPort_auto": false,
     "kubernetes_service_port_auto": false,
     "kubernetes_targetPort_auto": false,
-    "mcp": false
+    "mcp": true
   }
 }
 ```
 
 Existing boolean capabilities (`workflow_apply`, `config_rollback`, …) remain unchanged.
 
-## MCP: DEFERRED
+## MCP (Phase 15)
 
-An MCP server is **not** implemented in this phase.
-
-**Why defer:** The CLI/API core already gives coding agents a stable, testable, provider-neutral integration surface without running another long-lived server or duplicating contract logic. MCP would mostly re-wrap the same commands; it adds deployment and auth surface area before a concrete consumer requires it.
-
-When added later, MCP tools should delegate to the same `build_contract()` and CLI entry points — not fork allocation or config logic.
+stdio MCP server is implemented — see [`mcp-integration.md`](mcp-integration.md). Entry point: `portforge mcp serve`. Tools delegate to the same `build_contract()`, workflow, config, and Central client modules as the CLI.
 
 ## External agent validation (no paid APIs)
 
@@ -93,6 +89,6 @@ Antigravity, Codex, and Claude integrations are validated by driving the **same 
 
 | Item | Reason |
 |------|--------|
-| MCP server | See above; CLI/API core sufficient for v1 |
+| MCP guide (`docs/guides/mcp.md`) | Provider config examples; separate doc task |
 | Physical host upgrade automation | Phase 8E / separate design ([`docs/design/agent-upgrade-management.md`](agent-upgrade-management.md)) |
 | Provider-specific prompt adapters | Thin wrappers only when a real environment needs them ([`docs/phase8d_coding_agent_integration.md`](../phase8d_coding_agent_integration.md)) |
