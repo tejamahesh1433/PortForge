@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .env
+!fixtures/workspace/**/.env
 .pytest_cache/
 .coverage
 htmlcov/
