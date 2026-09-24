@@ -643,3 +643,309 @@ def test_upgrade_persists_across_db_session(client, db):
     assert loaded is not None
     assert loaded.state in ("APPROVED", "WAITING_FOR_AGENT")
     assert loaded.target_version == _TARGET_VERSION
+
+
+# ---------------------------------------------------------------------------
+# Phase 20: heartbeat reconciliation tests
+# ---------------------------------------------------------------------------
+
+
+def _walk_to_restarting(client, agent_token: str, host_id: uuid.UUID, upgrade_id: str) -> None:
+    """Advance an upgrade from APPROVED/WAITING_FOR_AGENT all the way to RESTARTING."""
+    for state in ("DOWNLOADING", "VERIFYING", "INSTALLING", "RESTARTING"):
+        r = client.post(
+            f"/api/agent/upgrades/{upgrade_id}/status",
+            headers={"Authorization": f"Bearer {agent_token}"},
+            json={"state": state},
+        )
+        assert r.status_code == 200, f"Failed to advance to {state}: {r.text}"
+
+
+def test_heartbeat_reconciles_restarting_to_succeeded(client, db):
+    """New process heartbeats with target version: RESTARTING → SUCCEEDED (via VERIFYING_HEALTH)."""
+    from app.models.host_upgrade import HostUpgrade
+
+    agent_token, host_id = _enroll(client, agent_version="1.0.0")
+    upgrade = _create_upgrade(client, host_id).json()
+    upgrade_id = upgrade["id"]
+
+    _walk_to_restarting(client, agent_token, host_id, upgrade_id)
+
+    # Authenticated heartbeat from the new process carrying the target version
+    # advances RESTARTING → VERIFYING_HEALTH → SUCCEEDED in one reconciliation.
+    hb = _heartbeat(client, agent_token, host_id, agent_version=_TARGET_VERSION)
+    assert hb.status_code == 200
+    row = db.get(HostUpgrade, uuid.UUID(upgrade_id))
+    db.refresh(row)
+    assert row.state == "SUCCEEDED"
+    assert row.completed_at is not None
+
+
+def test_heartbeat_wrong_version_leaves_restarting(client, db):
+    """Heartbeat with a version that does not match target leaves state unchanged."""
+    from app.models.host_upgrade import HostUpgrade
+
+    agent_token, host_id = _enroll(client, agent_version="1.0.0")
+    upgrade = _create_upgrade(client, host_id).json()
+    upgrade_id = upgrade["id"]
+
+    _walk_to_restarting(client, agent_token, host_id, upgrade_id)
+
+    hb = _heartbeat(client, agent_token, host_id, agent_version="9.9.9")
+    assert hb.status_code == 200
+    row = db.get(HostUpgrade, uuid.UUID(upgrade_id))
+    db.refresh(row)
+    assert row.state == "RESTARTING"
+
+
+def test_heartbeat_does_not_resurrect_failed(client, db):
+    """A FAILED upgrade is never touched by reconciliation, even with a matching version."""
+    from app.models.host_upgrade import HostUpgrade
+
+    agent_token, host_id = _enroll(client, agent_version="1.0.0")
+    upgrade = _create_upgrade(client, host_id).json()
+    upgrade_id = upgrade["id"]
+
+    # Drive the upgrade to FAILED via the status API.
+    client.post(
+        f"/api/agent/upgrades/{upgrade_id}/status",
+        headers={"Authorization": f"Bearer {agent_token}"},
+        json={"state": "DOWNLOADING"},
+    )
+    client.post(
+        f"/api/agent/upgrades/{upgrade_id}/status",
+        headers={"Authorization": f"Bearer {agent_token}"},
+        json={"state": "FAILED", "failure_reason": "simulated failure"},
+    )
+
+    row = db.get(HostUpgrade, uuid.UUID(upgrade_id))
+    db.refresh(row)
+    assert row.state == "FAILED"
+
+    # Heartbeat with the target version must not change the terminal state.
+    hb = _heartbeat(client, agent_token, host_id, agent_version=_TARGET_VERSION)
+    assert hb.status_code == 200
+    db.refresh(row)
+    assert row.state == "FAILED"
+
+
+def test_heartbeat_install_failure_not_completed_by_matching_version(client, db):
+    """Install-stage FAILED stays FAILED even if a later heartbeat reports target version."""
+    from app.models.host_upgrade import HostUpgrade
+
+    agent_token, host_id = _enroll(client, agent_version="1.0.0")
+    upgrade = _create_upgrade(client, host_id).json()
+    upgrade_id = upgrade["id"]
+
+    for state in ("DOWNLOADING", "VERIFYING", "INSTALLING"):
+        r = client.post(
+            f"/api/agent/upgrades/{upgrade_id}/status",
+            headers={"Authorization": f"Bearer {agent_token}"},
+            json={"state": state},
+        )
+        assert r.status_code == 200
+    r = client.post(
+        f"/api/agent/upgrades/{upgrade_id}/status",
+        headers={"Authorization": f"Bearer {agent_token}"},
+        json={"state": "FAILED", "failure_reason": "Installation failed"},
+    )
+    assert r.status_code == 200
+
+    row = db.get(HostUpgrade, uuid.UUID(upgrade_id))
+    db.refresh(row)
+    assert row.state == "FAILED"
+
+    hb = _heartbeat(client, agent_token, host_id, agent_version=_TARGET_VERSION)
+    assert hb.status_code == 200
+    db.refresh(row)
+    assert row.state == "FAILED"
+
+
+def test_heartbeat_other_host_cannot_complete(client, db):
+    """Host B's heartbeat does not advance Host A's upgrade."""
+    from app.models.host_upgrade import HostUpgrade
+
+    agent_a, host_a = _enroll(client, hostname="host-a")
+    agent_b, host_b = _enroll(client, hostname="host-b")
+
+    upgrade = _create_upgrade(client, host_a).json()
+    upgrade_id = upgrade["id"]
+    _walk_to_restarting(client, agent_a, host_a, upgrade_id)
+
+    # Host B heartbeats with A's target version — must not touch A's upgrade.
+    hb = _heartbeat(client, agent_b, host_b, agent_version=_TARGET_VERSION)
+    assert hb.status_code == 200
+
+    row = db.get(HostUpgrade, uuid.UUID(upgrade_id))
+    db.refresh(row)
+    assert row.state == "RESTARTING"
+
+
+def test_heartbeat_wrong_credential_rejected(client, db):
+    """Invalid / foreign credential cannot reconcile an upgrade."""
+    from app.models.host_upgrade import HostUpgrade
+
+    agent_token, host_id = _enroll(client, agent_version="1.0.0")
+    upgrade = _create_upgrade(client, host_id).json()
+    upgrade_id = upgrade["id"]
+    _walk_to_restarting(client, agent_token, host_id, upgrade_id)
+
+    bad = _heartbeat(client, "not-a-real-token", host_id, agent_version=_TARGET_VERSION)
+    assert bad.status_code in (401, 403)
+
+    row = db.get(HostUpgrade, uuid.UUID(upgrade_id))
+    db.refresh(row)
+    assert row.state == "RESTARTING"
+
+
+def test_heartbeat_idempotent_after_succeeded(client, db):
+    """Additional heartbeats after SUCCEEDED leave the row unchanged."""
+    from app.models.host_upgrade import HostUpgrade
+
+    agent_token, host_id = _enroll(client, agent_version="1.0.0")
+    upgrade = _create_upgrade(client, host_id).json()
+    upgrade_id = upgrade["id"]
+
+    _walk_to_restarting(client, agent_token, host_id, upgrade_id)
+    _heartbeat(client, agent_token, host_id, agent_version=_TARGET_VERSION)
+
+    row = db.get(HostUpgrade, uuid.UUID(upgrade_id))
+    db.refresh(row)
+    assert row.state == "SUCCEEDED"
+    completed_at_first = row.completed_at
+
+    # Subsequent heartbeat must not mutate the terminal row.
+    _heartbeat(client, agent_token, host_id, agent_version=_TARGET_VERSION)
+    db.refresh(row)
+    assert row.state == "SUCCEEDED"
+    assert row.completed_at == completed_at_first
+
+
+def test_heartbeat_skips_approved_without_restarting(client, db):
+    """A matching-version heartbeat against an APPROVED upgrade must not skip to SUCCEEDED."""
+    from app.models.host_upgrade import HostUpgrade
+
+    agent_token, host_id = _enroll(client, agent_version="1.0.0")
+    upgrade = _create_upgrade(client, host_id).json()
+    upgrade_id = upgrade["id"]
+
+    # The upgrade is APPROVED (or WAITING_FOR_AGENT) — not RESTARTING.
+    row = db.get(HostUpgrade, uuid.UUID(upgrade_id))
+    db.refresh(row)
+    assert row.state in ("APPROVED", "WAITING_FOR_AGENT")
+
+    # Heartbeat with the target version must leave the upgrade untouched.
+    hb = _heartbeat(client, agent_token, host_id, agent_version=_TARGET_VERSION)
+    assert hb.status_code == 200
+    db.refresh(row)
+    assert row.state not in ("SUCCEEDED", "VERIFYING_HEALTH")
+    assert row.state in ("APPROVED", "WAITING_FOR_AGENT")
+
+
+def test_heartbeat_decommissioned_host_not_reconciled(client, db):
+    """DECOMMISSIONED hosts must not have upgrades advanced by heartbeat."""
+    from app.models.host import Host
+    from app.models.host_upgrade import HostUpgrade
+
+    agent_token, host_id = _enroll(client, agent_version="1.0.0")
+    upgrade = _create_upgrade(client, host_id).json()
+    upgrade_id = upgrade["id"]
+    _walk_to_restarting(client, agent_token, host_id, upgrade_id)
+
+    host = db.get(Host, host_id)
+    host.lifecycle_state = "DECOMMISSIONED"
+    db.commit()
+
+    # Heartbeat may be rejected by auth/lifecycle policy; either way no SUCCEEDED.
+    _heartbeat(client, agent_token, host_id, agent_version=_TARGET_VERSION)
+    row = db.get(HostUpgrade, uuid.UUID(upgrade_id))
+    db.refresh(row)
+    assert row.state == "RESTARTING"
+
+
+def test_rollback_terminal_not_reconciled(client, db):
+    """A ROLLED_BACK upgrade is not touched by a version-matching heartbeat."""
+    from app.models.host_upgrade import HostUpgrade
+
+    agent_token, host_id = _enroll(client, agent_version="1.0.0")
+    prev_url = "https://example.com/portforge_agent-1.0.0-py3-none-any.whl"
+    prev_sha = "b" * 64
+    upgrade = _create_upgrade(
+        client,
+        host_id,
+        previous_artifact_url=prev_url,
+        previous_artifact_sha256=prev_sha,
+    ).json()
+    upgrade_id = upgrade["id"]
+
+    # Rollback transitions the original upgrade to ROLLED_BACK.
+    r = client.post(f"/api/upgrades/{upgrade_id}/rollback", headers=ADMIN)
+    assert r.status_code == 201
+
+    row = db.get(HostUpgrade, uuid.UUID(upgrade_id))
+    db.refresh(row)
+    assert row.state == "ROLLED_BACK"
+
+    # Heartbeat with the original target version must not change the terminal state.
+    hb = _heartbeat(client, agent_token, host_id, agent_version=_TARGET_VERSION)
+    assert hb.status_code == 200
+    db.refresh(row)
+    assert row.state == "ROLLED_BACK"
+
+
+def test_stale_attempt_cannot_complete_current(client, db):
+    """A terminal FAILED attempt A cannot complete; only current RESTARTING B can."""
+    from app.models.host_upgrade import HostUpgrade
+
+    agent_token, host_id = _enroll(client, agent_version="1.0.0")
+    upgrade_a = _create_upgrade(client, host_id).json()
+    id_a = upgrade_a["id"]
+
+    client.post(
+        f"/api/agent/upgrades/{id_a}/status",
+        headers={"Authorization": f"Bearer {agent_token}"},
+        json={"state": "DOWNLOADING"},
+    )
+    client.post(
+        f"/api/agent/upgrades/{id_a}/status",
+        headers={"Authorization": f"Bearer {agent_token}"},
+        json={"state": "FAILED", "failure_reason": "stale attempt"},
+    )
+    row_a = db.get(HostUpgrade, uuid.UUID(id_a))
+    db.refresh(row_a)
+    assert row_a.state == "FAILED"
+
+    upgrade_b = _create_upgrade(client, host_id).json()
+    id_b = upgrade_b["id"]
+    _walk_to_restarting(client, agent_token, host_id, id_b)
+
+    hb = _heartbeat(client, agent_token, host_id, agent_version=_TARGET_VERSION)
+    assert hb.status_code == 200
+
+    db.refresh(row_a)
+    assert row_a.state == "FAILED"
+    row_b = db.get(HostUpgrade, uuid.UUID(id_b))
+    db.refresh(row_b)
+    assert row_b.state == "SUCCEEDED"
+
+
+def test_reconcile_upgrade_after_heartbeat_unit(db):
+    """Unit-test reconcile_upgrade_after_heartbeat directly (no HTTP layer)."""
+    from app.services.upgrade_service import reconcile_upgrade_after_heartbeat
+
+    # Should return None for decommissioned host.
+    result = reconcile_upgrade_after_heartbeat(
+        db, uuid.uuid4(), "1.1.0", lifecycle_state="DECOMMISSIONED"
+    )
+    assert result is None
+
+    # Should return None when reported_version is empty.
+    result = reconcile_upgrade_after_heartbeat(db, uuid.uuid4(), None)
+    assert result is None
+
+    result = reconcile_upgrade_after_heartbeat(db, uuid.uuid4(), "")
+    assert result is None
+
+    # Should return None when no RESTARTING/VERIFYING_HEALTH upgrade exists.
+    result = reconcile_upgrade_after_heartbeat(db, uuid.uuid4(), "1.1.0")
+    assert result is None

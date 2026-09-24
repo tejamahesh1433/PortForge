@@ -334,7 +334,11 @@ def test_run_upgrade_returns_false_on_install_failure(tmp_path):
     assert "RESTARTING" not in states
 
 
-def test_run_upgrade_returns_false_on_restart_failure(tmp_path):
+def test_run_upgrade_returns_true_and_stays_restarting_on_restart_exception(tmp_path):
+    """If restart_service() raises, the handler must still return True (handoff to
+    Central reconciliation) and must NOT report FAILED.  The upgrade was reported
+    RESTARTING to Central; that terminal-adjacent state is the authority — Central's
+    heartbeat reconciliation decides the final outcome, not the old agent process."""
     client = _make_client()
     payload = _good_payload()
 
@@ -345,14 +349,15 @@ def test_run_upgrade_returns_false_on_restart_failure(tmp_path):
         patch("portforge_agent.upgrade.handler._install_wheel"),
         patch(
             "portforge_agent.upgrade.platform_restart.restart_service",
-            side_effect=RuntimeError("schtasks failed"),
+            side_effect=RuntimeError("service manager unavailable"),
         ),
     ):
         result = run_upgrade(client, "test-host", payload, current_version="1.3.0")
 
-    assert result is False
+    assert result is True
     states = [c.kwargs["state"] for c in client.report_upgrade_status.call_args_list]
-    assert states[-1] == "FAILED"
+    assert "RESTARTING" in states
+    assert "FAILED" not in states
 
 
 # ---------------------------------------------------------------------------
@@ -599,7 +604,7 @@ def test_restart_via_systemd_uses_literal_unit():
         restart_via_systemd()
 
     cmd = mock_run.call_args.args[0]
-    assert cmd == ["systemctl", "--user", "restart", "portforge-agent.service"]
+    assert cmd == ["systemctl", "--user", "restart", "--no-block", "portforge-agent.service"]
 
 
 def test_restart_via_launchctl_uses_literal_plist_label(tmp_path):
@@ -641,6 +646,7 @@ def test_restart_via_systemd_honors_service_name_env(monkeypatch):
         "systemctl",
         "--user",
         "restart",
+        "--no-block",
         "portforge-agent-qual.service",
     ]
 

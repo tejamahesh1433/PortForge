@@ -30,7 +30,7 @@ from ..schemas.agent import (
 from ..schemas.probe import PendingProbeOut, ProbeResultIn, ProbeResultOut
 from ..schemas.upgrade import UpgradeOut, UpgradeStatusUpdate
 from ..security.auth import AuthenticatedAgent, require_admin, require_agent
-from ..services import compatibility_service, enrollment_service, host_service, ingestion_service, probe_service
+from ..services import compatibility_service, enrollment_service, host_service, ingestion_service, probe_service, upgrade_service
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 
@@ -109,6 +109,16 @@ def heartbeat(
         )
     except ValueError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(exc)) from exc
+
+    reconciled = upgrade_service.reconcile_upgrade_after_heartbeat(
+        db,
+        host.id,
+        payload.agent_version,
+        lifecycle_state=host.lifecycle_state,
+    )
+    if reconciled is not None:
+        db.commit()
+
     compatibility = compatibility_service.evaluate_protocol_compatibility(payload.protocol_version)
 
     # v1.1-B: deliver any pending remote bind-probe requests on this same

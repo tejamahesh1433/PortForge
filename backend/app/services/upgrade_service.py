@@ -348,6 +348,70 @@ def rollback_upgrade(
     return rollback_upgrade_row
 
 
+def reconcile_upgrade_after_heartbeat(
+    db: Session,
+    host_id: uuid.UUID,
+    reported_version: str | None,
+    *,
+    lifecycle_state: str | None = None,
+) -> Optional[HostUpgrade]:
+    """Advance an in-flight upgrade's state based on a fresh heartbeat.
+
+    Called by the heartbeat handler after record_heartbeat succeeds.  Bridges
+    the process-boundary gap: the old agent process reports RESTARTING and exits;
+    the new process reconnects without upgrade context.  Central reconciles:
+
+        RESTARTING → VERIFYING_HEALTH → SUCCEEDED
+
+    on an authenticated heartbeat whose reported_version exactly matches
+    target_version (the heartbeat itself is the health proof). Two matching
+    heartbeats in a row are also safe (idempotent after SUCCEEDED).
+
+    Guards (all must hold; any failure returns None without mutation):
+    - lifecycle_state != DECOMMISSIONED
+    - reported_version is non-empty
+    - An upgrade in {RESTARTING, VERIFYING_HEALTH} exists for this host
+    - reported_version == upgrade.target_version (exact string match)
+    - upgrade.claimed_at is not None (agent must have claimed the upgrade)
+
+    Terminal states (SUCCEEDED/FAILED/ROLLED_BACK) are never touched.
+    Uses SELECT ... FOR UPDATE to prevent duplicate transitions from
+    concurrent heartbeat requests.
+    """
+    if (lifecycle_state or "ACTIVE") == "DECOMMISSIONED":
+        return None
+    if not reported_version:
+        return None
+
+    upgrade_repo = UpgradeRepository(db)
+    upgrade = upgrade_repo.get_restart_eligible_for_host(host_id, for_update=True)
+    if upgrade is None:
+        return None
+    if reported_version != upgrade.target_version:
+        return None
+    if upgrade.claimed_at is None:
+        return None
+
+    now = datetime.now(timezone.utc)
+
+    # Advance through VERIFYING_HEALTH into SUCCEEDED in one reconciliation
+    # when the authenticated heartbeat already proves the target version.
+    if upgrade.state == "RESTARTING":
+        upgrade.state = "VERIFYING_HEALTH"
+        db.flush()
+
+    if upgrade.state == "VERIFYING_HEALTH":
+        upgrade.state = "SUCCEEDED"
+        upgrade.completed_at = now
+        host_repo = HostRepository(db)
+        host = host_repo.get(host_id)
+        if host is not None:
+            host.last_error = None
+        db.flush()
+
+    return upgrade
+
+
 def fail_active_upgrades_for_host(
     db: Session, host_id: uuid.UUID, reason: str, now: datetime
 ) -> int:

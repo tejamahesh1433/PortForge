@@ -79,6 +79,29 @@ class UpgradeRepository:
         result = self.db.execute(stmt)
         return result.rowcount
 
+    def get_restart_eligible_for_host(
+        self, host_id: uuid.UUID, *, for_update: bool = False
+    ) -> Optional[HostUpgrade]:
+        """Return the oldest upgrade in RESTARTING or VERIFYING_HEALTH for a host.
+
+        Used by Central heartbeat reconciliation to advance the state machine
+        across the process-boundary gap (old agent restarted; new agent reconnects).
+        Pass for_update=True to acquire a row-level lock and prevent duplicate
+        transitions from concurrent heartbeat requests.
+        """
+        stmt = (
+            select(HostUpgrade)
+            .where(
+                HostUpgrade.host_id == host_id,
+                HostUpgrade.state.in_(["RESTARTING", "VERIFYING_HEALTH"]),
+            )
+            .order_by(HostUpgrade.created_at.asc())
+            .limit(1)
+        )
+        if for_update:
+            stmt = stmt.with_for_update()
+        return self.db.execute(stmt).scalar_one_or_none()
+
     def get_active_summaries_for_hosts(
         self, host_ids: list[uuid.UUID]
     ) -> dict[uuid.UUID, HostUpgrade]:

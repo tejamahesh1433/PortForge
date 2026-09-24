@@ -85,19 +85,32 @@ def restart_via_windows_scheduler() -> None:
 
 
 def restart_via_systemd() -> None:
-    """Restart the PortForge user systemd unit (name from env or default)."""
+    """Restart the PortForge user systemd unit (name from env or default).
+
+    Uses --no-block so that systemd enqueues the restart asynchronously and
+    returns exit 0 immediately, before the old process is stopped.  Without
+    --no-block, systemctl waits for the unit to become active; because this
+    process *is* the unit, it cannot reach the active state while we are still
+    running the subprocess call — the call would block indefinitely or until
+    the timeout kills it.  --no-block avoids that deadlock entirely.
+
+    Success is not inferred from the return code alone.  Central's heartbeat
+    reconciliation is the authoritative success criterion: VERIFYING_HEALTH and
+    SUCCEEDED are only reached once the new process reconnects with the expected
+    agent_version.
+    """
     from ..subprocess_util import run_subprocess
 
     unit = _linux_service_name()
     result = run_subprocess(
-        ["systemctl", "--user", "restart", unit],
+        ["systemctl", "--user", "restart", "--no-block", unit],
         capture_output=True,
         text=True,
         timeout=30,
     )
     if result.returncode != 0:
         raise RuntimeError(
-            f"systemctl --user restart failed (rc={result.returncode}): {result.stderr.strip()}"
+            f"systemctl --user restart --no-block failed (rc={result.returncode}): {result.stderr.strip()}"
         )
 
 

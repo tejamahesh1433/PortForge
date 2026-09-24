@@ -13,8 +13,10 @@ Control model (from docs/design/agent-upgrade-management.md):
 Status transitions reported to Central during a successful run:
   DOWNLOADING → VERIFYING → INSTALLING → RESTARTING → (new process continues)
 
-The new process reconnects and Central marks SUCCEEDED after it receives a
-heartbeat with the expected agent_version.
+After RESTARTING is reported, this process calls restart_service() and exits.
+The new process reconnects and Central's heartbeat reconciliation advances the
+state to VERIFYING_HEALTH and then SUCCEEDED once the expected agent_version is
+confirmed.  Central — not the old agent process — owns those final transitions.
 """
 from __future__ import annotations
 
@@ -309,12 +311,24 @@ def run_upgrade(
             from .platform_restart import restart_service
             restart_service()
         except Exception as exc:
-            logger.error("Upgrade restart failed: %s", exc)
-            _report("FAILED", failure_reason=f"Restart failed: {exc}")
-            return False
+            # The restart request failed to be delivered to the service manager,
+            # but we have already reported RESTARTING to Central.  Do NOT report
+            # FAILED here: Central's heartbeat reconciliation is the authority
+            # on whether the new process actually came up.  If the restart truly
+            # did not happen, the upgrade will remain in RESTARTING indefinitely
+            # and an operator can inspect or manually cancel it.  Reporting
+            # FAILED from this path would overwrite RESTARTING with a terminal
+            # state even when the service manager may have succeeded.
+            logger.warning(
+                "Upgrade restart call raised an exception — handoff to Central "
+                "reconciliation (state stays RESTARTING): %s",
+                exc,
+            )
+            return True
 
-        # Restart initiated. The NEW process will reconnect and Central will
-        # mark SUCCEEDED after it sees a heartbeat with the expected version.
+        # Restart initiated. The new process reconnects and Central's heartbeat
+        # reconciliation advances RESTARTING → VERIFYING_HEALTH → SUCCEEDED
+        # once the expected agent_version is confirmed.
         logger.info("Upgrade to %s complete. Agent process restarting.", target_version)
         return True
 
