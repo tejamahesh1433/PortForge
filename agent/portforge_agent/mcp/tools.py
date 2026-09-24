@@ -8,6 +8,7 @@ from ..central_client import CentralResult
 from ..manifest import ManifestError, load_and_validate_manifest
 from ..project_adapter import build_candidate_preview, build_normalized_request, to_allocation_body
 from ..workflow import WorkflowError, apply_workflow, get_workflow_status, prepare_workflow
+from ..workspace import discover_workspace, plan_workspace, workspace_to_json
 from . import MCP_SCHEMA_VERSION
 from .approval import require_mutate_approval
 from .context import load_manifest_and_host, make_client, resolve_manifest_path, resolve_project_root
@@ -197,7 +198,68 @@ def _handle_project_inspect(arguments: dict, server_defaults: dict) -> dict:
     }
 
 
+def _handle_workspace_discover(arguments: dict, server_defaults: dict) -> dict:
+    project_root = resolve_project_root(arguments.get("project_root"))
+    include_local_runtime = arguments.get("include_local_runtime", True)
+    model = discover_workspace(
+        project_root,
+        central_url=_url(arguments, server_defaults),
+        include_local_runtime=include_local_runtime,
+    )
+    return workspace_to_json(model)
+
+
 def _handle_project_plan(arguments: dict, server_defaults: dict) -> dict:
+    if arguments.get("workspace"):
+        project_root = resolve_project_root(arguments.get("project_root"), arguments.get("manifest_path"))
+        url = _url(arguments, server_defaults)
+        model = discover_workspace(project_root, central_url=url, include_local_runtime=True)
+        client = None
+        host = None
+        if url:
+            try:
+                client = make_client(url)
+                if model.existing_manifest:
+                    from ..project_adapter import resolve_host_ref
+
+                    host, host_error, _code = resolve_host_ref(client, model.existing_manifest.get("host") or "")
+                    if host_error:
+                        host = None
+            except McpToolError:
+                client = None
+        plan = plan_workspace(model, client=client, host=host)
+        from .plans import compute_workspace_plan_fingerprint
+
+        intent_summary = {
+            "services": [
+                {"name": row.get("service"), "proposed_port": row.get("proposed_port"), "current_port": row.get("current_port")}
+                for row in plan.get("services", [])
+            ]
+        }
+        plan_hash, file_hashes = compute_workspace_plan_fingerprint(
+            project_root, model.fingerprint_inputs, intent_summary
+        )
+        plan_id = save_plan(
+            project_root,
+            {
+                "mode": "workspace",
+                "plan_hash": plan_hash,
+                "file_hashes": file_hashes,
+                "fingerprint_inputs": list(model.fingerprint_inputs),
+                "intent_summary": intent_summary,
+                "project_root": str(project_root),
+            },
+        )
+        return {
+            "mode": "workspace",
+            "plan_id": plan_id,
+            "plan_hash": plan_hash,
+            "project_root": str(project_root),
+            "discovery": workspace_to_json(model),
+            "plan": plan,
+            "committed": False,
+        }
+
     client, manifest, host, project_root = load_manifest_and_host(
         _url(arguments, server_defaults),
         arguments.get("project_root"),
@@ -248,7 +310,13 @@ def _handle_project_provision(arguments: dict, server_defaults: dict) -> dict:
 
     plan_id = arguments.get("plan_id")
     if plan_id:
-        verify_plan_fresh(project_root, plan_id, manifest)
+        from .plans import load_plan
+
+        record = load_plan(project_root, plan_id)
+        if record.get("mode") == "workspace":
+            verify_plan_fresh(project_root, plan_id, manifest=None)
+        else:
+            verify_plan_fresh(project_root, plan_id, manifest)
 
     try:
         return apply_workflow(client, manifest, host, project_root, request_id)
@@ -370,6 +438,21 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "handler": _handle_capabilities,
     },
     {
+        "name": "portforge_workspace_discover",
+        "description": "Static workspace discovery for services, host ports, evidence, and conflicts.",
+        "classification": READ,
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_root": {"type": "string"},
+                "central_url": {"type": "string"},
+                "include_local_runtime": {"type": "boolean"},
+            },
+            "additionalProperties": False,
+        },
+        "handler": _handle_workspace_discover,
+    },
+    {
         "name": "portforge_project_inspect",
         "description": "Read-only summary of manifest services, allocations, and config targets.",
         "classification": READ,
@@ -394,6 +477,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 "project_root": {"type": "string"},
                 "manifest_path": {"type": "string"},
                 "central_url": {"type": "string"},
+                "workspace": {"type": "boolean"},
             },
             "additionalProperties": False,
         },

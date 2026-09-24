@@ -43,6 +43,21 @@ def compute_plan_fingerprint(manifest: ProjectManifest, project_root: Path) -> s
     return hashlib.sha256(encoded).hexdigest()
 
 
+def compute_workspace_plan_fingerprint(project_root: Path, relative_paths: list[str], intent_summary: dict) -> tuple[str, dict[str, str]]:
+    """Fingerprint workspace planning inputs. Returns (hash, per-file hashes)."""
+    file_hashes: dict[str, str] = {}
+    for relative_file in sorted(set(relative_paths)):
+        try:
+            resolved = resolve_within_root(project_root, relative_file)
+            file_hashes[relative_file] = sha256_of_path(resolved) or "MISSING"
+        except ConfigPathError:
+            file_hashes[relative_file] = "MISSING"
+
+    canonical = {"intent": intent_summary, "files": file_hashes}
+    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest(), file_hashes
+
+
 def _plans_dir(project_root: Path) -> Path:
     return project_root / PLANS_DIR
 
@@ -68,8 +83,40 @@ def load_plan(project_root: Path, plan_id: str) -> dict:
     return json.loads(raw.decode("utf-8"))
 
 
-def verify_plan_fresh(project_root: Path, plan_id: str, manifest: ProjectManifest) -> None:
+def verify_plan_fresh(project_root: Path, plan_id: str, manifest: ProjectManifest | None = None) -> None:
     record = load_plan(project_root, plan_id)
+    mode = record.get("mode") or "manifest"
+
+    if mode == "workspace":
+        paths = record.get("fingerprint_inputs") or []
+        intent = record.get("intent_summary") or {}
+        current, current_files = compute_workspace_plan_fingerprint(project_root, paths, intent)
+        stored = record.get("plan_hash")
+        if stored != current:
+            stored_files = record.get("file_hashes") or {}
+            changed = [
+                path
+                for path in sorted(set(list(stored_files) + list(current_files)))
+                if stored_files.get(path) != current_files.get(path)
+            ]
+            raise McpToolError(
+                "CONFIG_CHANGED_SINCE_PLAN",
+                "Workspace planning inputs changed since the plan was created.",
+                details=[
+                    {
+                        "plan_id": plan_id,
+                        "stored_hash": stored,
+                        "current_hash": current,
+                        "changed_paths": changed,
+                    }
+                ],
+                recovery={"action": "Call portforge_project_plan with workspace=true again before provisioning."},
+            )
+        return
+
+    if manifest is None:
+        raise McpToolError("INVALID_PARAMS", "manifest is required to verify a non-workspace plan.")
+
     current = compute_plan_fingerprint(manifest, project_root)
     stored = record.get("plan_hash")
     if stored != current:
