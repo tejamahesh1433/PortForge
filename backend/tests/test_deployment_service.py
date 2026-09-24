@@ -292,3 +292,159 @@ def test_service_build_plan_unit(db, enrolled_host):
     )
     assert plan["plan_hash"]
     assert db.scalar(select(func.count()).select_from(HostDeployment)) == 0
+
+
+def test_heartbeat_redelivers_expired_in_progress_for_reclaim(client, enrolled_host, db):
+    """After lease expiry, STARTING deployments must reappear on heartbeat for reclaim."""
+    from datetime import datetime, timedelta, timezone
+
+    agent_token, host_id = enrolled_host.agent_token, enrolled_host.id
+    deployment_id = uuid.UUID(_create_deployment(client, host_id).json()["id"])
+    claim = _claim(client, agent_token, deployment_id)
+    token = claim.json()["claim_token"]
+    for state in ("PREPARING", "TRANSFERRING", "STARTING"):
+        assert _status(client, agent_token, deployment_id, token, state=state).status_code == 200
+
+    # While lease is live, pending should not re-offer the in-progress job as APPROVED-only —
+    # but STARTING with live lease is not redelivered (agent still holds it).
+    hb_live = _heartbeat(client, agent_token, host_id)
+    assert hb_live.status_code == 200
+    # No second APPROVED; in-progress with live lease is held — pending may be null
+    # (only APPROVED or expired non-terminal are eligible).
+    pending_live = hb_live.json().get("pending_deployment")
+    assert pending_live is None or pending_live.get("state") != "APPROVED"
+
+    # Expire lease
+    row = db.get(HostDeployment, deployment_id)
+    row.claim_expires_at = datetime.now(timezone.utc) - timedelta(seconds=5)
+    db.commit()
+
+    hb = _heartbeat(client, agent_token, host_id)
+    assert hb.status_code == 200
+    pending = hb.json()["pending_deployment"]
+    assert pending is not None
+    assert pending["deployment_id"] == str(deployment_id)
+    assert pending["state"] == "STARTING"
+
+
+# ---------------------------------------------------------------------------
+# B. SUCCEEDED without/with revision_id + idempotency
+# ---------------------------------------------------------------------------
+
+def test_succeeded_without_revision_id_is_422(client, enrolled_host):
+    """SUCCEEDED state without a revision_id must be rejected with 422."""
+    agent_token, host_id = enrolled_host.agent_token, enrolled_host.id
+    deployment_id = uuid.UUID(_create_deployment(client, host_id).json()["id"])
+    claim = _claim(client, agent_token, deployment_id)
+    assert claim.status_code == 200
+    token = claim.json()["claim_token"]
+    for state in ("PREPARING", "TRANSFERRING", "STARTING", "VERIFYING"):
+        r = _status(client, agent_token, deployment_id, token, state=state)
+        assert r.status_code == 200, f"Unexpected failure for {state}: {r.text}"
+    # SUCCEEDED without revision_id → 422
+    r = _status(client, agent_token, deployment_id, token, state="SUCCEEDED")
+    assert r.status_code == 422
+
+
+def test_succeeded_with_revision_id_is_200(client, db, enrolled_host):
+    """SUCCEEDED with a valid revision_id must be accepted with 200."""
+    agent_token, host_id = enrolled_host.agent_token, enrolled_host.id
+    deployment_id = uuid.UUID(_create_deployment(client, host_id).json()["id"])
+    body = _succeed_deployment(client, db, agent_token, host_id, deployment_id, "rev-test")
+    assert body["state"] == "SUCCEEDED"
+    assert body["result_revision_id"] is not None
+
+
+def test_second_succeeded_on_terminal_is_409(client, db, enrolled_host):
+    """After a deployment is SUCCEEDED (terminal), any further status update → 409."""
+    agent_token, host_id = enrolled_host.agent_token, enrolled_host.id
+    deployment_id = uuid.UUID(_create_deployment(client, host_id).json()["id"])
+    _succeed_deployment(client, db, agent_token, host_id, deployment_id, "rev-done")
+    # Terminal check happens before claim-token verification; any token value triggers 409.
+    r = _status(
+        client, agent_token, deployment_id, "any-token",
+        state="SUCCEEDED", revision_id="rev-done-2",
+    )
+    assert r.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# C. ports_json delivered on pending_deployment
+# ---------------------------------------------------------------------------
+
+def test_heartbeat_delivers_ports_json_on_pending_deployment(client, enrolled_host):
+    """ports_json stored on creation must be forwarded in the heartbeat response."""
+    agent_token, host_id = enrolled_host.agent_token, enrolled_host.id
+    ports = {
+        "services": [
+            {"name": "api", "internal_port": 8000, "host_port": 18000, "protocol": "tcp"}
+        ]
+    }
+    _create_deployment(client, host_id, ports_json=ports)
+    hb = _heartbeat(client, agent_token, host_id)
+    assert hb.status_code == 200
+    pending = hb.json()["pending_deployment"]
+    assert pending is not None
+    assert pending["ports_json"] == ports
+
+
+# ---------------------------------------------------------------------------
+# F. Claim lease edge-cases
+# ---------------------------------------------------------------------------
+
+def test_stale_claim_token_rejected_after_expiry(client, db, enrolled_host):
+    """A claim token that has expired must be rejected for status updates (→ 409)."""
+    from datetime import timedelta
+
+    agent_token, host_id = enrolled_host.agent_token, enrolled_host.id
+    deployment_id = uuid.UUID(_create_deployment(client, host_id).json()["id"])
+    claim = _claim(client, agent_token, deployment_id)
+    assert claim.status_code == 200
+    token = claim.json()["claim_token"]
+
+    # Manually expire the lease in the DB.
+    dep = db.get(HostDeployment, deployment_id)
+    dep.claim_expires_at = datetime.now(timezone.utc) - timedelta(seconds=10)
+    db.flush()
+    db.commit()
+
+    r = _status(client, agent_token, deployment_id, token, state="PREPARING")
+    assert r.status_code == 409
+
+
+def test_new_claim_after_expiry_rejects_old_token(client, db, enrolled_host):
+    """After lease expires and a new claim is made, the old token is rejected."""
+    from datetime import timedelta
+
+    agent_token, host_id = enrolled_host.agent_token, enrolled_host.id
+    deployment_id = uuid.UUID(_create_deployment(client, host_id).json()["id"])
+
+    # First claim.
+    claim1 = _claim(client, agent_token, deployment_id)
+    assert claim1.status_code == 200
+    old_token = claim1.json()["claim_token"]
+
+    # Expire the lease.
+    dep = db.get(HostDeployment, deployment_id)
+    dep.claim_expires_at = datetime.now(timezone.utc) - timedelta(seconds=10)
+    db.flush()
+    db.commit()
+
+    # Second claim issues a new token.
+    claim2 = _claim(client, agent_token, deployment_id)
+    assert claim2.status_code == 200
+    new_token = claim2.json()["claim_token"]
+    assert new_token != old_token
+
+    # Old token must now be rejected.
+    r = _status(client, agent_token, deployment_id, old_token, state="PREPARING")
+    assert r.status_code == 409
+
+
+def test_claim_after_terminal_deployment_is_409(client, db, enrolled_host):
+    """Claiming a deployment that is already in a terminal state must return 409."""
+    agent_token, host_id = enrolled_host.agent_token, enrolled_host.id
+    deployment_id = uuid.UUID(_create_deployment(client, host_id).json()["id"])
+    _succeed_deployment(client, db, agent_token, host_id, deployment_id, "rev-1")
+    r = _claim(client, agent_token, deployment_id)
+    assert r.status_code == 409

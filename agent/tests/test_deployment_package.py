@@ -94,6 +94,34 @@ def test_extract_rejects_absolute_windows_path(tmp_path):
         extract_archive_safe(archive_path, tmp_path / "out")
 
 
+def test_extract_rejects_unc_backslash_path(tmp_path):
+    """\\\\server\\share\\... UNC paths (backslash form) must be rejected."""
+    archive_path = tmp_path / "unc_back.zip"
+    _write_zip(
+        archive_path,
+        {
+            "manifest.json": b'{"files":[],"compose_files":[]}',
+            "\\\\server\\share\\evil.txt": b"nope",
+        },
+    )
+    with pytest.raises(PackageExtractError, match="absolute path"):
+        extract_archive_safe(archive_path, tmp_path / "out")
+
+
+def test_extract_rejects_unc_slash_path(tmp_path):
+    """//server/share/... UNC paths (forward-slash form) must be rejected."""
+    archive_path = tmp_path / "unc_slash.zip"
+    _write_zip(
+        archive_path,
+        {
+            "manifest.json": b'{"files":[],"compose_files":[]}',
+            "//server/share/evil.txt": b"nope",
+        },
+    )
+    with pytest.raises(PackageExtractError, match="absolute path"):
+        extract_archive_safe(archive_path, tmp_path / "out")
+
+
 def test_extract_manifest_checksum_mismatch(tmp_path):
     compose = b"services: {}\n"
     archive, _, _ = build_local_package(

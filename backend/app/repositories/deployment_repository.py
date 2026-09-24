@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 from typing import Optional, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ..models.deployment_revision import DeploymentRevision
@@ -54,12 +54,28 @@ class DeploymentRepository:
         return self.db.execute(stmt).scalar_one_or_none()
 
     def get_pending_for_host(self, host_id: uuid.UUID) -> Optional[HostDeployment]:
-        """Return the oldest APPROVED deployment ready for agent pickup."""
+        """Return a non-terminal deployment ready for agent pickup or reclaim.
+
+        - APPROVED jobs are always eligible (first claim / same-host retry).
+        - In-progress jobs (TRANSFERRING/STARTING/...) are eligible only when the
+          claim lease is missing or expired, so a restarted agent can reclaim
+          after interruption without allowing a live claimant to be stolen.
+        """
+        from datetime import datetime, timezone
+
+        from ..services.deployment_states import TERMINAL_STATES
+
+        now = datetime.now(timezone.utc)
         stmt = (
             select(HostDeployment)
             .where(
                 HostDeployment.host_id == host_id,
-                HostDeployment.state == "APPROVED",
+                HostDeployment.state.not_in(TERMINAL_STATES),
+                or_(
+                    HostDeployment.state == "APPROVED",
+                    HostDeployment.claim_expires_at.is_(None),
+                    HostDeployment.claim_expires_at <= now,
+                ),
             )
             .order_by(HostDeployment.created_at.asc())
             .limit(1)
