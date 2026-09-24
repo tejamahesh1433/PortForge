@@ -80,6 +80,48 @@ class UpgradeSummary(ApiModel):
     id: uuid.UUID
     state: str
     target_version: str
+    # Phase 22 additive observability (optional for older clients)
+    progress_status: Optional[str] = None
+    waiting_reason: Optional[str] = None
+    failure_code: Optional[str] = None
+    explanation: Optional[str] = None
+    operator_actions: Optional[list[str]] = None
+
+
+class UpgradeStatusOut(ApiModel):
+    """Typed operator-facing upgrade status (derived; not a new table)."""
+
+    upgrade_id: uuid.UUID
+    host_id: uuid.UUID
+    hostname: Optional[str] = None
+
+    current_version: Optional[str] = None
+    host_health: str
+    host_lifecycle: str
+    runtime_matches_target: bool
+
+    upgrade_state: str
+    target_version: str
+    request_id: Optional[str] = None
+
+    progress_status: str
+    waiting_reason: Optional[str] = None
+    failure_code: Optional[str] = None
+    failure_summary: Optional[str] = None
+    explanation: str
+
+    attempt_index: int = 1
+    related_attempt_count: int = 1
+    retryable: bool = False
+
+    reconciliation_status: str
+    operator_actions: list[str]
+
+    failure_reason: Optional[str] = None
+    updated_at: datetime
+    claimed_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    created_at: datetime
 
 
 # ---------------------------------------------------------------------------
@@ -158,3 +200,7 @@ class RolloutOut(ApiModel):
     skipped: int
     total: int
     members: list[RolloutMemberOut]
+    # Phase 22 additive (derived; policy itself is not persisted)
+    stop_reason: Optional[str] = None
+    operator_summary: Optional[str] = None
+    not_started: int = 0

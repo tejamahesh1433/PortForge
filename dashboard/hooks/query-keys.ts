@@ -48,5 +48,7 @@ export const queryKeys = {
   upgrades: {
     listForHost: (hostId: string) => ["upgrades", "host", hostId] as const,
     detail: (upgradeId: string) => ["upgrades", "detail", upgradeId] as const,
+    status: (upgradeId: string) => ["upgrades", "status", upgradeId] as const,
+    hostStatus: (hostId: string) => ["upgrades", "hostStatus", hostId] as const,
   },
 } as const;

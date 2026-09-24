@@ -184,3 +184,65 @@ describe("Fleet page client-side filters", () => {
     expect(result).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 22: ActiveUpgradeSummary additive fields (progress_status / waiting_reason)
+// These are pure type/data tests -- no DOM render needed.
+// ---------------------------------------------------------------------------
+
+describe("ActiveUpgradeSummary Phase 22 additive fields", () => {
+  it("host with active_upgrade including progress_status and waiting_reason passes through filter", () => {
+    const withRichUpgrade = makeHost({
+      hostname: "epsilon",
+      update_availability: "UPDATE_AVAILABLE",
+      active_upgrade: {
+        id: "eeeeeeee-ffff-aaaa-bbbb-cccccccccccc",
+        state: "WAITING_FOR_AGENT",
+        target_version: "1.2.0",
+        progress_status: "waiting",
+        waiting_reason: "Awaiting next agent heartbeat",
+        operator_actions: ["CANCEL"],
+      },
+    });
+    const result = applyFilters([withRichUpgrade], { updateFilter: "UPDATE_AVAILABLE" });
+    expect(result).toHaveLength(1);
+    expect(result[0].active_upgrade?.progress_status).toBe("waiting");
+    expect(result[0].active_upgrade?.waiting_reason).toBe("Awaiting next agent heartbeat");
+  });
+
+  it("host with active_upgrade and failure_code in additive fields is accessible", () => {
+    const withFailedUpgrade = makeHost({
+      hostname: "zeta",
+      active_upgrade: {
+        id: "ffffffff-aaaa-bbbb-cccc-dddddddddddd",
+        state: "FAILED",
+        target_version: "1.2.0",
+        progress_status: "failed",
+        failure_code: "SHA_MISMATCH",
+        explanation: "Artifact hash did not match.",
+        operator_actions: ["RETRY"],
+      },
+    });
+    const result = applyFilters([withFailedUpgrade], {});
+    expect(result).toHaveLength(1);
+    expect(result[0].active_upgrade?.failure_code).toBe("SHA_MISMATCH");
+    expect(result[0].active_upgrade?.operator_actions).toContain("RETRY");
+  });
+
+  it("older host without additive fields (undefined) does not break filter", () => {
+    // Simulates an older Central that omits the new fields
+    const legacyHost = makeHost({
+      hostname: "legacy",
+      active_upgrade: {
+        id: "aaaaaaaa-1111-2222-3333-444444444444",
+        state: "DOWNLOADING",
+        target_version: "1.2.0",
+        // No progress_status, waiting_reason, etc.
+      },
+    });
+    const result = applyFilters([legacyHost], {});
+    expect(result).toHaveLength(1);
+    expect(result[0].active_upgrade?.progress_status).toBeUndefined();
+    expect(result[0].active_upgrade?.operator_actions).toBeUndefined();
+  });
+});

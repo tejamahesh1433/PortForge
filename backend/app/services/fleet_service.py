@@ -19,10 +19,12 @@ from ..schemas.health_status import derive_health_state
 from ..schemas.host import FleetHostOut
 from ..schemas.upgrade import UpgradeSummary
 from ..services import compatibility_service
+from ..services.upgrade_status_service import build_upgrade_status
 from ..services.version_compare import update_availability
 
 
 def _build_fleet_out(
+    db: Session,
     host: Host,
     now: datetime,
     active_upgrade_map: dict[uuid.UUID, object],
@@ -41,11 +43,24 @@ def _build_fleet_out(
     active_upgrade = active_upgrade_map.get(host.id)
     active_upgrade_out = None
     if active_upgrade is not None:
-        active_upgrade_out = UpgradeSummary(
-            id=active_upgrade.id,
-            state=active_upgrade.state,
-            target_version=active_upgrade.target_version,
-        )
+        try:
+            status = build_upgrade_status(db, active_upgrade, host=host, now=now)
+            active_upgrade_out = UpgradeSummary(
+                id=active_upgrade.id,
+                state=active_upgrade.state,
+                target_version=active_upgrade.target_version,
+                progress_status=status.progress_status,
+                waiting_reason=status.waiting_reason,
+                failure_code=status.failure_code,
+                explanation=status.explanation,
+                operator_actions=status.operator_actions,
+            )
+        except Exception:
+            active_upgrade_out = UpgradeSummary(
+                id=active_upgrade.id,
+                state=active_upgrade.state,
+                target_version=active_upgrade.target_version,
+            )
 
     return FleetHostOut(
         id=host.id,
@@ -103,7 +118,7 @@ def get_fleet(
     host_ids = [h.id for h in all_hosts]
     active_upgrade_map = upgrade_repo.get_active_summaries_for_hosts(host_ids)
 
-    fleet_items = [_build_fleet_out(h, now, active_upgrade_map) for h in all_hosts]
+    fleet_items = [_build_fleet_out(db, h, now, active_upgrade_map) for h in all_hosts]
 
     # In-Python filters for derived fields
     if health_state_filter:
@@ -127,4 +142,4 @@ def get_fleet_host(db: Session, host_id: uuid.UUID) -> Optional[FleetHostOut]:
     upgrade_repo = UpgradeRepository(db)
     active_upgrade_map = upgrade_repo.get_active_summaries_for_hosts([host_id])
 
-    return _build_fleet_out(host, now, active_upgrade_map)
+    return _build_fleet_out(db, host, now, active_upgrade_map)

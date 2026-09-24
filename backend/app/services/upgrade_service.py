@@ -168,6 +168,21 @@ def create_upgrade(
     )
     db.add(upgrade)
     db.flush()
+
+    from ..services.upgrade_audit import EVT_CREATED, emit_upgrade_event
+
+    emit_upgrade_event(
+        db,
+        host_id=host_id,
+        event_type=EVT_CREATED,
+        summary=f"Upgrade approved targeting {target_version}",
+        upgrade_id=upgrade.id,
+        metadata={
+            "state": initial_state,
+            "target_version": target_version,
+            "request_id": request_id,
+        },
+    )
     return upgrade
 
 
@@ -229,11 +244,13 @@ def update_upgrade_status(
             )
 
     now = datetime.now(timezone.utc)
+    first_claim = upgrade.claimed_at is None
 
     # Set claimed_at on first agent status report
-    if upgrade.claimed_at is None:
+    if first_claim:
         upgrade.claimed_at = now
 
+    prior_state = upgrade.state
     upgrade.state = new_state
 
     if new_state == "FAILED":
@@ -254,6 +271,55 @@ def update_upgrade_status(
             host.last_error = None
 
     db.flush()
+
+    from ..services.upgrade_audit import (
+        EVT_CLAIMED,
+        EVT_FAILED,
+        EVT_STATE,
+        EVT_SUCCEEDED,
+        emit_upgrade_event,
+    )
+
+    if first_claim:
+        emit_upgrade_event(
+            db,
+            host_id=host_id,
+            event_type=EVT_CLAIMED,
+            summary=f"Upgrade claimed; state {new_state}",
+            upgrade_id=upgrade_id,
+            metadata={"state": new_state},
+        )
+
+    if new_state == "SUCCEEDED":
+        emit_upgrade_event(
+            db,
+            host_id=host_id,
+            event_type=EVT_SUCCEEDED,
+            summary=f"Upgrade succeeded to {upgrade.target_version}",
+            upgrade_id=upgrade_id,
+            metadata={"target_version": upgrade.target_version, "reported_version": reported_version},
+            idempotent=True,
+        )
+    elif new_state == "FAILED":
+        emit_upgrade_event(
+            db,
+            host_id=host_id,
+            event_type=EVT_FAILED,
+            summary=f"Upgrade failed: {(failure_reason or 'unknown')[:200]}",
+            upgrade_id=upgrade_id,
+            metadata={"failure_reason": failure_reason},
+            idempotent=True,
+        )
+    elif new_state != prior_state:
+        emit_upgrade_event(
+            db,
+            host_id=host_id,
+            event_type=EVT_STATE,
+            summary=f"Upgrade {prior_state} → {new_state}",
+            upgrade_id=upgrade_id,
+            metadata={"from": prior_state, "to": new_state},
+        )
+
     return upgrade
 
 
@@ -345,6 +411,21 @@ def rollback_upgrade(
         original.completed_at = original.completed_at or now
 
     db.flush()
+
+    from ..services.upgrade_audit import EVT_ROLLBACK, emit_upgrade_event
+
+    emit_upgrade_event(
+        db,
+        host_id=original.host_id,
+        event_type=EVT_ROLLBACK,
+        summary=f"Rollback upgrade created targeting {original.previous_version}",
+        upgrade_id=rollback_upgrade_row.id,
+        metadata={
+            "original_upgrade_id": str(original.id),
+            "target_version": original.previous_version,
+        },
+        idempotent=True,
+    )
     return rollback_upgrade_row
 
 
@@ -393,6 +474,7 @@ def reconcile_upgrade_after_heartbeat(
         return None
 
     now = datetime.now(timezone.utc)
+    prior = upgrade.state
 
     # Advance through VERIFYING_HEALTH into SUCCEEDED in one reconciliation
     # when the authenticated heartbeat already proves the target version.
@@ -400,6 +482,7 @@ def reconcile_upgrade_after_heartbeat(
         upgrade.state = "VERIFYING_HEALTH"
         db.flush()
 
+    reached_success = False
     if upgrade.state == "VERIFYING_HEALTH":
         upgrade.state = "SUCCEEDED"
         upgrade.completed_at = now
@@ -408,6 +491,35 @@ def reconcile_upgrade_after_heartbeat(
         if host is not None:
             host.last_error = None
         db.flush()
+        reached_success = True
+
+    from ..services.upgrade_audit import EVT_RECONCILED, EVT_SUCCEEDED, emit_upgrade_event
+
+    emit_upgrade_event(
+        db,
+        host_id=host_id,
+        event_type=EVT_RECONCILED,
+        summary=f"Post-restart reconcile {prior} → {upgrade.state} (version {reported_version})",
+        upgrade_id=upgrade.id,
+        metadata={
+            "from": prior,
+            "to": upgrade.state,
+            "reported_version": reported_version,
+        },
+        # One reconcile audit per successful terminal transition path;
+        # subsequent heartbeats after SUCCEEDED never enter this function.
+        idempotent=reached_success,
+    )
+    if reached_success:
+        emit_upgrade_event(
+            db,
+            host_id=host_id,
+            event_type=EVT_SUCCEEDED,
+            summary=f"Upgrade succeeded to {upgrade.target_version} (reconciled)",
+            upgrade_id=upgrade.id,
+            metadata={"target_version": upgrade.target_version, "via": "heartbeat_reconcile"},
+            idempotent=True,
+        )
 
     return upgrade
 

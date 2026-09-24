@@ -325,3 +325,28 @@ class CentralClient:
 
         query = f"host_id={quote(host_id)}&service_type={quote(service_type)}&protocol={quote(protocol)}"
         return self._request("GET", f"/api/recommendations?{query}", authenticated=False)
+
+    # --- Phase 22: admin upgrade observability --------------------------------
+    # All four methods require PORTFORGE_ADMIN_BOOTSTRAP_TOKEN (authenticated=True,
+    # self.token must be the admin bootstrap token -- see require_admin in
+    # backend/app/security/auth.py, same posture as generate_enrollment_token).
+
+    def get_upgrade_status(self, upgrade_id: str) -> CentralResult:
+        """GET /api/upgrades/{id}/status -- typed UpgradeStatusOut."""
+        return self._request("GET", f"/api/upgrades/{upgrade_id}/status")
+
+    def get_host_upgrade_status(self, host_id: str) -> CentralResult:
+        """GET /api/hosts/{host_id}/upgrade-status."""
+        return self._request("GET", f"/api/hosts/{host_id}/upgrade-status")
+
+    def retry_upgrade(self, upgrade_id: str) -> CentralResult:
+        """POST /api/upgrades/{id}/retry -- returns 201 on success."""
+        return self._request("POST", f"/api/upgrades/{upgrade_id}/retry", body={})
+
+    def cancel_upgrade(self, upgrade_id: str) -> CentralResult:
+        """POST /api/upgrades/{id}/cancel."""
+        return self._request("POST", f"/api/upgrades/{upgrade_id}/cancel", body={})
+
+    def get_upgrade_rollout(self, request_id: str) -> CentralResult:
+        """GET /api/upgrade-rollouts/{request_id}."""
+        return self._request("GET", f"/api/upgrade-rollouts/{request_id}")

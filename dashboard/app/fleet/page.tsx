@@ -94,9 +94,19 @@ const columns: ColumnDef<FleetHostOut, unknown>[] = [
       const u = row.original.active_upgrade;
       if (!u) return <span className="text-muted-foreground text-xs">—</span>;
       return (
-        <span className="inline-flex items-center gap-1 text-xs font-mono text-amber-400">
-          <ArrowUpCircle className="size-3" aria-hidden="true" />
-          {u.state}
+        <span className="inline-flex flex-col gap-0.5">
+          <span className="inline-flex items-center gap-1 text-xs font-mono text-amber-400">
+            <ArrowUpCircle className="size-3" aria-hidden="true" />
+            {u.state}
+            {u.progress_status && u.progress_status !== "in_progress" && (
+              <span className="text-muted-foreground">· {u.progress_status}</span>
+            )}
+          </span>
+          {u.waiting_reason && (
+            <span className="text-xs text-muted-foreground truncate max-w-[160px]" title={u.waiting_reason}>
+              {u.waiting_reason}
+            </span>
+          )}
         </span>
       );
     },

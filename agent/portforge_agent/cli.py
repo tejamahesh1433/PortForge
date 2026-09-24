@@ -2242,6 +2242,191 @@ def _cmd_central_sync(args: argparse.Namespace) -> int:
     return 0 if outcome.success else 1
 
 
+# ---------------------------------------------------------------------------
+# Phase 22: admin upgrade observability commands
+# ---------------------------------------------------------------------------
+
+def _admin_upgrade_client(args: argparse.Namespace):
+    """Returns (CentralClient, error_str).
+
+    Mirrors the generate-token pattern: admin token from --admin-token flag
+    then PORTFORGE_ADMIN_BOOTSTRAP_TOKEN env var; URL from --url flag.
+    """
+    import os
+    from .central_client import CentralClient
+
+    admin_token = args.admin_token or os.environ.get("PORTFORGE_ADMIN_BOOTSTRAP_TOKEN")
+    if not admin_token:
+        return None, (
+            "No admin bootstrap token provided. "
+            "Pass --admin-token or set PORTFORGE_ADMIN_BOOTSTRAP_TOKEN."
+        )
+    url, url_error = _resolve_central_base_url(args)
+    if url_error:
+        return None, url_error
+    return CentralClient(args.url, token=admin_token), None
+
+
+def _render_upgrade_status_human(data: dict) -> None:
+    """Human-readable rendering of an UpgradeStatusOut payload.
+
+    Fields shown: host, current/target version, upgrade_state,
+    progress_status, waiting_reason, failure_code/summary, explanation,
+    operator_actions, reconciliation_status.
+    """
+    host = data.get("host") or data.get("hostname") or data.get("host_id") or "-"
+    print(f"Host:                  {host}")
+    print(f"Upgrade ID:            {data.get('id') or data.get('upgrade_id') or '-'}")
+    print(f"Current version:       {data.get('current_version') or '-'}")
+    print(f"Target version:        {data.get('target_version') or '-'}")
+    print(f"Upgrade state:         {data.get('upgrade_state') or data.get('state') or '-'}")
+    print(f"Progress status:       {data.get('progress_status') or '-'}")
+    if data.get("waiting_reason"):
+        print(f"Waiting reason:        {data['waiting_reason']}")
+    if data.get("failure_code"):
+        print(f"Failure code:          {data['failure_code']}")
+    if data.get("failure_summary"):
+        print(f"Failure summary:       {data['failure_summary']}")
+    if data.get("explanation"):
+        print(f"Explanation:           {data['explanation']}")
+    if data.get("operator_actions"):
+        actions = data["operator_actions"]
+        if isinstance(actions, list):
+            print(f"Operator actions:      {', '.join(str(a) for a in actions)}")
+        else:
+            print(f"Operator actions:      {actions}")
+    if data.get("reconciliation_status"):
+        print(f"Reconciliation status: {data['reconciliation_status']}")
+
+
+def _cmd_upgrade_status(args: argparse.Namespace) -> int:
+    if not args.upgrade_id and not args.host_id:
+        print("Error: --upgrade-id or --host-id is required.", file=sys.stderr)
+        return 2
+
+    client, err = _admin_upgrade_client(args)
+    if err:
+        if args.json:
+            print(json.dumps({"success": False, "error": err}))
+        else:
+            print(f"Error: {err}", file=sys.stderr)
+        return 1
+
+    if args.upgrade_id:
+        result = client.get_upgrade_status(args.upgrade_id)
+    else:
+        result = client.get_host_upgrade_status(args.host_id)
+
+    if not result.success:
+        if args.json:
+            print(json.dumps({"success": False, "error": result.error, "data": result.data}, indent=2))
+        else:
+            print(f"Error: {result.error}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(result.data, indent=2))
+    else:
+        data = result.data or {}
+        if isinstance(data, list):
+            for item in data:
+                _render_upgrade_status_human(item)
+                print()
+        else:
+            _render_upgrade_status_human(data)
+    return 0
+
+
+def _cmd_upgrade_retry(args: argparse.Namespace) -> int:
+    if not args.yes:
+        print("Error: --yes is required to confirm the retry action.", file=sys.stderr)
+        return 2
+
+    client, err = _admin_upgrade_client(args)
+    if err:
+        if args.json:
+            print(json.dumps({"success": False, "error": err}))
+        else:
+            print(f"Error: {err}", file=sys.stderr)
+        return 1
+
+    result = client.retry_upgrade(args.upgrade_id)
+    if not result.success:
+        if args.json:
+            print(json.dumps({"success": False, "error": result.error, "data": result.data}, indent=2))
+        else:
+            print(f"Error: {result.error}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps({"success": True, "data": result.data}, indent=2))
+    else:
+        print(f"Upgrade {args.upgrade_id} queued for retry.")
+    return 0
+
+
+def _cmd_upgrade_cancel(args: argparse.Namespace) -> int:
+    if not args.yes:
+        print("Error: --yes is required to confirm the cancel action.", file=sys.stderr)
+        return 2
+
+    client, err = _admin_upgrade_client(args)
+    if err:
+        if args.json:
+            print(json.dumps({"success": False, "error": err}))
+        else:
+            print(f"Error: {err}", file=sys.stderr)
+        return 1
+
+    result = client.cancel_upgrade(args.upgrade_id)
+    if not result.success:
+        if args.json:
+            print(json.dumps({"success": False, "error": result.error, "data": result.data}, indent=2))
+        else:
+            print(f"Error: {result.error}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps({"success": True, "data": result.data}, indent=2))
+    else:
+        print(f"Upgrade {args.upgrade_id} cancelled.")
+    return 0
+
+
+def _cmd_upgrade_rollout(args: argparse.Namespace) -> int:
+    client, err = _admin_upgrade_client(args)
+    if err:
+        if args.json:
+            print(json.dumps({"success": False, "error": err}))
+        else:
+            print(f"Error: {err}", file=sys.stderr)
+        return 1
+
+    result = client.get_upgrade_rollout(args.request_id)
+    if not result.success:
+        if args.json:
+            print(json.dumps({"success": False, "error": result.error, "data": result.data}, indent=2))
+        else:
+            print(f"Error: {result.error}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(result.data, indent=2))
+    else:
+        data = result.data or {}
+        print(f"Rollout request_id:  {data.get('request_id') or args.request_id}")
+        print(f"State:               {data.get('state') or '-'}")
+        print(f"Total hosts:         {data.get('total_hosts') or '-'}")
+        print(f"Succeeded:           {data.get('succeeded_count') or data.get('succeeded') or '-'}")
+        print(f"Failed:              {data.get('failed_count') or data.get('failed') or '-'}")
+        print(f"Pending:             {data.get('pending_count') or data.get('pending') or '-'}")
+        if data.get("started_at"):
+            print(f"Started:             {data['started_at']}")
+        if data.get("completed_at"):
+            print(f"Completed:           {data['completed_at']}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="portforge")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -2655,6 +2840,62 @@ def build_parser() -> argparse.ArgumentParser:
 
     from .cli_agent import add_agent_subparsers
     add_agent_subparsers(subparsers)
+
+    # --- Phase 22: admin upgrade observability --------------------------------
+    # MCP: read-only upgrade status (get_upgrade_status / get_upgrade_rollout)
+    # could be exposed as MCP tools in a future phase; mutating retry/cancel
+    # are intentionally deferred -- DEFER: read-only MCP upgrade tools (Phase 22+).
+    upgrade_parser = subparsers.add_parser(
+        "upgrade", help="Admin upgrade observability (requires admin bootstrap token)"
+    )
+    upgrade_subparsers = upgrade_parser.add_subparsers(dest="upgrade_command", required=True)
+
+    def _add_upgrade_admin_args(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--url", type=str, required=True, help="Central server base URL")
+        p.add_argument(
+            "--admin-token",
+            type=str,
+            default=None,
+            help="Admin bootstrap token; prefer PORTFORGE_ADMIN_BOOTSTRAP_TOKEN env var",
+        )
+        p.add_argument("--json", action="store_true")
+
+    upgrade_status_parser = upgrade_subparsers.add_parser(
+        "status", help="Show upgrade status by upgrade ID or host ID"
+    )
+    upgrade_status_parser.add_argument(
+        "--upgrade-id", type=str, default=None, dest="upgrade_id",
+        help="Upgrade record ID (mutually exclusive with --host-id)"
+    )
+    upgrade_status_parser.add_argument(
+        "--host-id", type=str, default=None, dest="host_id",
+        help="Host UUID (mutually exclusive with --upgrade-id)"
+    )
+    _add_upgrade_admin_args(upgrade_status_parser)
+    upgrade_status_parser.set_defaults(func=_cmd_upgrade_status)
+
+    upgrade_retry_parser = upgrade_subparsers.add_parser(
+        "retry", help="Retry a failed upgrade (admin-only; --yes required)"
+    )
+    upgrade_retry_parser.add_argument("upgrade_id", type=str, help="Upgrade record ID")
+    upgrade_retry_parser.add_argument("--yes", action="store_true", help="Confirm the retry action")
+    _add_upgrade_admin_args(upgrade_retry_parser)
+    upgrade_retry_parser.set_defaults(func=_cmd_upgrade_retry)
+
+    upgrade_cancel_parser = upgrade_subparsers.add_parser(
+        "cancel", help="Cancel an in-progress upgrade (admin-only; --yes required)"
+    )
+    upgrade_cancel_parser.add_argument("upgrade_id", type=str, help="Upgrade record ID")
+    upgrade_cancel_parser.add_argument("--yes", action="store_true", help="Confirm the cancel action")
+    _add_upgrade_admin_args(upgrade_cancel_parser)
+    upgrade_cancel_parser.set_defaults(func=_cmd_upgrade_cancel)
+
+    upgrade_rollout_parser = upgrade_subparsers.add_parser(
+        "rollout", help="Show rollout status for a multi-host upgrade request"
+    )
+    upgrade_rollout_parser.add_argument("request_id", type=str, help="Rollout request ID")
+    _add_upgrade_admin_args(upgrade_rollout_parser)
+    upgrade_rollout_parser.set_defaults(func=_cmd_upgrade_rollout)
 
     return parser
 

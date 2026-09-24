@@ -24,6 +24,7 @@ import type {
   DashboardReservationIn,
   AllocationIn,
   UpgradeOut,
+  UpgradeStatusOut,
 } from "@/lib/types/api";
 
 /** GET /api/health */
@@ -331,4 +332,129 @@ export async function rollbackUpgrade(upgradeId: string, signal?: AbortSignal): 
     );
   }
   return body as UpgradeOut;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 22: Upgrade observability (all admin-gated via BFF)
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/upgrades/{id}/status (admin via BFF) -- typed status with
+ * progress_status, waiting_reason, failure_code, operator_actions, etc.
+ */
+export async function getUpgradeStatus(
+  upgradeId: string,
+  signal?: AbortSignal,
+): Promise<UpgradeStatusOut> {
+  let response: Response;
+  try {
+    response = await fetch(`/api/upgrades/${encodeURIComponent(upgradeId)}/status`, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      signal,
+    });
+  } catch (cause) {
+    throw new PortForgeConnectionError(cause);
+  }
+
+  const body = (await response.json().catch(() => null)) as { detail?: unknown } | null;
+  if (!response.ok) {
+    const detail = typeof body?.detail === "string" ? body.detail : null;
+    throw new PortForgeApiError(
+      response.status,
+      detail,
+      detail ?? `Failed to get upgrade status (${response.status})`,
+    );
+  }
+  return body as UpgradeStatusOut;
+}
+
+/**
+ * POST /api/upgrades/{id}/retry (admin via BFF) -- re-attempt a failed upgrade.
+ */
+export async function retryUpgrade(upgradeId: string, signal?: AbortSignal): Promise<UpgradeOut> {
+  let response: Response;
+  try {
+    response = await fetch(`/api/upgrades/${encodeURIComponent(upgradeId)}/retry`, {
+      method: "POST",
+      headers: { Accept: "application/json" },
+      signal,
+    });
+  } catch (cause) {
+    throw new PortForgeConnectionError(cause);
+  }
+
+  const body = (await response.json().catch(() => null)) as { detail?: unknown } | null;
+  if (!response.ok) {
+    const detail = typeof body?.detail === "string" ? body.detail : null;
+    throw new PortForgeApiError(
+      response.status,
+      detail,
+      detail ?? `Failed to retry upgrade (${response.status})`,
+    );
+  }
+  return body as UpgradeOut;
+}
+
+/**
+ * POST /api/upgrades/{id}/cancel (admin via BFF) -- abort an in-progress upgrade.
+ */
+export async function cancelUpgrade(upgradeId: string, signal?: AbortSignal): Promise<UpgradeOut> {
+  let response: Response;
+  try {
+    response = await fetch(`/api/upgrades/${encodeURIComponent(upgradeId)}/cancel`, {
+      method: "POST",
+      headers: { Accept: "application/json" },
+      signal,
+    });
+  } catch (cause) {
+    throw new PortForgeConnectionError(cause);
+  }
+
+  const body = (await response.json().catch(() => null)) as { detail?: unknown } | null;
+  if (!response.ok) {
+    const detail = typeof body?.detail === "string" ? body.detail : null;
+    throw new PortForgeApiError(
+      response.status,
+      detail,
+      detail ?? `Failed to cancel upgrade (${response.status})`,
+    );
+  }
+  return body as UpgradeOut;
+}
+
+/**
+ * GET /api/hosts/{hostId}/upgrade-status (admin via BFF) -- host-level
+ * upgrade status, including the active upgrade's typed status if any.
+ * Returns null (404 treated as no active upgrade) rather than throwing.
+ */
+export async function getHostUpgradeStatus(
+  hostId: string,
+  signal?: AbortSignal,
+): Promise<UpgradeStatusOut | null> {
+  let response: Response;
+  try {
+    response = await fetch(`/api/hosts/${encodeURIComponent(hostId)}/upgrade-status`, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      signal,
+    });
+  } catch (cause) {
+    throw new PortForgeConnectionError(cause);
+  }
+
+  if (response.status === 404) {
+    return null;
+  }
+
+  const body = (await response.json().catch(() => null)) as { detail?: unknown } | null;
+  if (!response.ok) {
+    const detail = typeof body?.detail === "string" ? body.detail : null;
+    throw new PortForgeApiError(
+      response.status,
+      detail,
+      detail ?? `Failed to get host upgrade status (${response.status})`,
+    );
+  }
+  return body as UpgradeStatusOut;
 }

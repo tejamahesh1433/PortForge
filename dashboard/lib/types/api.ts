@@ -438,6 +438,12 @@ export interface ActiveUpgradeSummary {
   id: string;
   state: UpgradeState;
   target_version: string;
+  // Phase 22: additive observability fields; absent on older Central versions.
+  progress_status?: UpgradeProgressStatus | null;
+  waiting_reason?: string | null;
+  failure_code?: string | null;
+  explanation?: string | null;
+  operator_actions?: UpgradeOperatorAction[];
 }
 
 /**
@@ -519,4 +525,69 @@ export interface CreateUpgradeIn {
   artifact_sha256: string;
   artifact_filename?: string | null;
   request_id?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 22: Upgrade observability types
+// backend/app/schemas/upgrade.py -- additive fields; older Central versions
+// that do not emit them will simply omit the keys (treated as null/[]).
+// ---------------------------------------------------------------------------
+
+/**
+ * High-level progress category returned by GET /api/upgrades/{id}/status.
+ * "waiting"     – awaiting next agent heartbeat
+ * "in_progress" – actively executing a step
+ * "blocked"     – stalled (waiting_reason will say why)
+ * "done"        – terminal success
+ * "failed"      – terminal failure
+ */
+export type UpgradeProgressStatus =
+  | "waiting"
+  | "in_progress"
+  | "blocked"
+  | "done"
+  | "failed";
+
+/**
+ * Operator-visible actions the backend considers safe for the current state.
+ * The UI only renders a button when the action appears in operator_actions.
+ * "retry"  – re-attempt the same upgrade
+ * "cancel" – abort an in-progress or waiting upgrade
+ */
+export type UpgradeOperatorAction = "VIEW" | "RETRY" | "CANCEL" | "ROLLBACK";
+
+/**
+ * backend/app/schemas/upgrade.py:UpgradeStatusOut
+ * Returned by GET /api/upgrades/{id}/status (admin-gated via BFF).
+ */
+export interface UpgradeStatusOut {
+  id: string;
+  host_id: string;
+  state: UpgradeState;
+  target_version: string;
+  progress_status: UpgradeProgressStatus | null;
+  waiting_reason: string | null;
+  failure_code: string | null;
+  explanation: string | null;
+  operator_actions: UpgradeOperatorAction[];
+  attempt_number: number | null;
+  attempt_max: number | null;
+  reconciliation_status: string | null;
+  /** Host health at status-poll time, separate from upgrade_state. */
+  host_health: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * backend/app/schemas/fleet.py:RolloutOut
+ * Fleet-wide rollout operation (Phase 22, additive fields).
+ */
+export interface RolloutOut {
+  id: string;
+  state: string;
+  target_version: string;
+  stop_reason?: string | null;
+  operator_summary?: string | null;
+  not_started?: boolean;
 }

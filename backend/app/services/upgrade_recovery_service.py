@@ -75,11 +75,33 @@ def recover_stuck_upgrades(
 
         age = (now - updated).total_seconds()
         if age >= threshold:
+            stuck_from = state
             upgrade.state = "FAILED"
             upgrade.failure_reason = f"stuck_timeout:{state}"
             upgrade.completed_at = now
             db.flush()
             recovered.append(upgrade)
+
+            from ..services.upgrade_audit import EVT_STUCK, EVT_FAILED, emit_upgrade_event
+
+            emit_upgrade_event(
+                db,
+                host_id=upgrade.host_id,
+                event_type=EVT_STUCK,
+                summary=f"Stuck upgrade timed out in {stuck_from}",
+                upgrade_id=upgrade.id,
+                metadata={"stuck_from": stuck_from},
+                idempotent=True,
+            )
+            emit_upgrade_event(
+                db,
+                host_id=upgrade.host_id,
+                event_type=EVT_FAILED,
+                summary=f"Upgrade failed: stuck_timeout:{stuck_from}",
+                upgrade_id=upgrade.id,
+                metadata={"failure_reason": f"stuck_timeout:{stuck_from}"},
+                idempotent=True,
+            )
 
     return recovered
 
@@ -118,6 +140,18 @@ def cancel_upgrade(db: Session, upgrade_id: uuid.UUID) -> HostUpgrade:
     upgrade.failure_reason = "operator_cancelled"
     upgrade.completed_at = now
     db.flush()
+
+    from ..services.upgrade_audit import EVT_CANCELLED, emit_upgrade_event
+
+    emit_upgrade_event(
+        db,
+        host_id=upgrade.host_id,
+        event_type=EVT_CANCELLED,
+        summary="Upgrade cancelled by operator",
+        upgrade_id=upgrade.id,
+        metadata={"failure_reason": "operator_cancelled"},
+        idempotent=True,
+    )
     return upgrade
 
 
@@ -147,7 +181,7 @@ def retry_upgrade(
         base = original.request_id or str(original.id)
         request_id = f"{base}:retry:{uuid.uuid4().hex[:8]}"
 
-    return create_upgrade(
+    new_upgrade = create_upgrade(
         db,
         host_id=original.host_id,
         target_version=original.target_version,
@@ -159,3 +193,21 @@ def retry_upgrade(
         previous_artifact_url=original.previous_artifact_url,
         previous_artifact_sha256=original.previous_artifact_sha256,
     )
+
+    from ..services.upgrade_audit import EVT_RETRY, emit_upgrade_event
+
+    # Only emit RETRY when a new row was created (idempotent create returns existing)
+    if new_upgrade.id != original.id:
+        emit_upgrade_event(
+            db,
+            host_id=original.host_id,
+            event_type=EVT_RETRY,
+            summary=f"Operator retry of failed upgrade {original.id}",
+            upgrade_id=new_upgrade.id,
+            metadata={
+                "parent_upgrade_id": str(original.id),
+                "request_id": request_id,
+            },
+            idempotent=True,
+        )
+    return new_upgrade

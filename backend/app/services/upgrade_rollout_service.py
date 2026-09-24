@@ -451,4 +451,49 @@ def _build_rollout_out(
         skipped=skipped,
         total=total,
         members=members,
+        stop_reason=(
+            "ROLLOUT_STOPPED_ON_FAILURE"
+            if status == "paused" and stop_on_failure and has_failed
+            else None
+        ),
+        operator_summary=_operator_summary(
+            status=status,
+            succeeded=succeeded,
+            failed=failed,
+            in_flight=in_flight,
+            waiting=waiting,
+            skipped=skipped,
+            total=total,
+            stop_on_failure=stop_on_failure,
+            has_failed=has_failed,
+        ),
+        not_started=max(0, total - succeeded - failed - in_flight - waiting - skipped),
     )
+
+
+def _operator_summary(
+    *,
+    status: str,
+    succeeded: int,
+    failed: int,
+    in_flight: int,
+    waiting: int,
+    skipped: int,
+    total: int,
+    stop_on_failure: bool,
+    has_failed: bool,
+) -> str:
+    parts = [
+        f"{succeeded} succeeded",
+        f"{failed} failed",
+        f"{in_flight} in progress",
+        f"{waiting} waiting",
+        f"{skipped} skipped",
+        f"{total} total",
+    ]
+    base = ", ".join(parts)
+    if status == "paused" and stop_on_failure and has_failed:
+        return f"Fleet rollout stopped after failure. Partial result: {base}."
+    if status == "completed":
+        return f"Fleet rollout completed. {base}."
+    return f"Fleet rollout {status}. {base}."

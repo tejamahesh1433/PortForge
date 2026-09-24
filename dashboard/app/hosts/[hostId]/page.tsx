@@ -25,6 +25,7 @@ import { RemoveHostDialog } from "@/components/hosts/remove-host-dialog";
 import { DecommissionHostDialog } from "@/components/hosts/decommission-host-dialog";
 import { ReactivateHostDialog } from "@/components/hosts/reactivate-host-dialog";
 import { UpgradeAgentDialog, RollbackUpgradeButton } from "@/components/hosts/upgrade-agent-dialog";
+import { UpgradeStatusPanel } from "@/components/hosts/upgrade-status-panel";
 import { UpdateAvailabilityBadge } from "@/components/status/update-availability-badge";
 import { LifecycleBadge } from "@/components/status/lifecycle-badge";
 import { getHostHealthState } from "@/lib/utils/host-health";
@@ -401,6 +402,9 @@ function UpgradesTab({ hostId, upgrades, isPending, isError, error, onRetry }: U
                 </div>
               )}
             </div>
+
+            {/* Phase 22: typed status panel for non-terminal upgrades */}
+            <UpgradeStatusPanel upgrade={u} hostId={hostId} />
 
             {/* Rollback: available when upgrade is terminal and has previous_version */}
             {TERMINAL_STATES.has(u.state) && u.previous_version && (

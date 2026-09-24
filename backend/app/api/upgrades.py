@@ -15,10 +15,12 @@ from ..schemas.upgrade import (
     StuckRecoveryOut,
     UpgradeCreateRequest,
     UpgradeOut,
+    UpgradeStatusOut,
 )
 from ..security.auth import require_admin
 from ..services import upgrade_service
 from ..services import upgrade_recovery_service, upgrade_rollout_service
+from ..services import upgrade_status_service
 
 # Routes prefixed with /hosts (admin host-scoped upgrade operations)
 host_upgrades_router = APIRouter(prefix="/hosts", tags=["upgrades"])
@@ -101,6 +103,37 @@ def get_upgrade(upgrade_id: uuid.UUID, db: Session = Depends(get_db)) -> Upgrade
     if upgrade is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Upgrade not found.")
     return _upgrade_out(upgrade)
+
+
+@upgrades_router.get(
+    "/{upgrade_id}/status",
+    response_model=UpgradeStatusOut,
+    dependencies=[Depends(require_admin)],
+    summary="Get Typed Upgrade Status",
+)
+def get_upgrade_status(upgrade_id: uuid.UUID, db: Session = Depends(get_db)) -> UpgradeStatusOut:
+    """Admin: derived operator-facing status (runtime vs control-plane separated)."""
+    try:
+        return upgrade_status_service.get_upgrade_status(db, upgrade_id)
+    except upgrade_service.UpgradeNotFoundError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+
+
+@host_upgrades_router.get(
+    "/{host_id}/upgrade-status",
+    response_model=UpgradeStatusOut,
+    dependencies=[Depends(require_admin)],
+    summary="Get Host Upgrade Status",
+)
+def get_host_upgrade_status(host_id: uuid.UUID, db: Session = Depends(get_db)) -> UpgradeStatusOut:
+    """Admin: active or most recent upgrade status for a host."""
+    try:
+        status_out = upgrade_status_service.get_host_upgrade_status(db, host_id)
+    except upgrade_service.UpgradeNotFoundError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+    if status_out is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No upgrades for this host.")
+    return status_out
 
 
 @upgrades_router.post(
