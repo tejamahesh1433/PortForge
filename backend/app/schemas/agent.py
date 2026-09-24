@@ -17,6 +17,7 @@ from typing import List, Optional
 from pydantic import Field, field_validator
 
 from .common import ApiModel
+from .deployment import PendingDeploymentOut
 from .probe import PendingProbeOut
 from .upgrade import PendingUpgradeOut as PendingUpgradeOut  # noqa: F401 (re-exported)
 
@@ -77,6 +78,8 @@ class HeartbeatResponse(ApiModel):
     # Phase 10: additive. A legacy agent that doesn't read this field simply
     # never acts on it -- the upgrade just stays APPROVED/WAITING_FOR_AGENT.
     pending_upgrade: Optional[PendingUpgradeOut] = None
+    # Phase 18: additive. Legacy agents ignore unknown fields.
+    pending_deployment: Optional[PendingDeploymentOut] = None
 
 
 class ObservationIn(ApiModel):

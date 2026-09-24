@@ -22,6 +22,7 @@ from ..schemas.agent import (
     EnrollmentResponse,
     HeartbeatRequest,
     HeartbeatResponse,
+    PendingDeploymentOut,
     PendingUpgradeOut,
     SnapshotResult,
     SnapshotSubmission,
@@ -148,6 +149,25 @@ def heartbeat(
             allow_downgrade=allow_downgrade,
         )
 
+    from ..services import deployment_service
+
+    pending_deployment_row = deployment_service.get_pending_for_host(db, agent.host_id)
+    pending_deployment_out = None
+    if pending_deployment_row is not None:
+        pending_deployment_out = PendingDeploymentOut(
+            deployment_id=pending_deployment_row.id,
+            request_id=pending_deployment_row.request_id,
+            project=pending_deployment_row.project,
+            environment=pending_deployment_row.environment,
+            state=pending_deployment_row.state,
+            package_uri=pending_deployment_row.package_uri,
+            package_sha256=pending_deployment_row.package_sha256,
+            package_manifest_sha256=pending_deployment_row.package_manifest_sha256,
+            plan_hash=pending_deployment_row.plan_hash,
+            claim_token=pending_deployment_row.claim_token,
+            claim_expires_at=pending_deployment_row.claim_expires_at,
+        )
+
     return HeartbeatResponse(
         host_id=host.id,
         last_seen=host.last_seen,
@@ -155,6 +175,7 @@ def heartbeat(
         protocol_compatibility=compatibility,
         pending_probes=pending_probes,
         pending_upgrade=pending_upgrade_out,
+        pending_deployment=pending_deployment_out,
     )
 
 

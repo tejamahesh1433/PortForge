@@ -79,6 +79,11 @@ class Settings(BaseSettings):
     update_artifact_sha256: str | None = None
     update_artifact_filename: str | None = None
 
+    # --- Deployment orchestration (Phase 18) ---------------------------------
+    # Comma-separated HTTPS artifact hosts allowed for deployment package_uri.
+    # Empty disables host allowlisting (any https host is accepted).
+    deployment_artifact_hosts: str = ""
+
     # --- Remote bind probe (v1.1-B) ------------------------------------------
     # See docs/v1.1/remote-probe-design.md. A probe result is only trusted as
     # fresh evidence within this window after being queued -- past it, it's
@@ -102,6 +107,14 @@ class Settings(BaseSettings):
     @property
     def cors_allowed_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]
+
+    @property
+    def deployment_artifact_hosts_list(self) -> list[str]:
+        return [
+            host.strip()
+            for host in self.deployment_artifact_hosts.split(",")
+            if host.strip()
+        ]
 
     @property
     def sqlalchemy_database_url(self) -> str:
