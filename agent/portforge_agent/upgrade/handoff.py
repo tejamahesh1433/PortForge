@@ -386,7 +386,7 @@ def _spawn_macos_helper(cmd: list, data_dir: Path, log_path: Path) -> None:
     from ..subprocess_util import run_subprocess
 
     label = "com.portforge.agent.upgradehelper"
-    uid = os.getuid()
+    uid = os.getuid()  # type: ignore[attr-defined]
     domain = f"gui/{uid}"
     plist_path = upgrade_dir(data_dir) / f"{label}.plist"
     # ProgramArguments as XML array; values are allowlisted argv only.
@@ -530,14 +530,14 @@ def _spawn_linux_helper(cmd: list, data_dir: Path, log_path: Path) -> None:
     log_fh = open(log_path, "ab")
     try:
         # First fork
-        pid = os.fork()
+        pid = os.fork()  # type: ignore[attr-defined]
         if pid > 0:
             # Parent: wait for intermediate to exit so we don't leave a zombie.
             os.waitpid(pid, 0)
             return
         # Intermediate
-        os.setsid()
-        pid2 = os.fork()
+        os.setsid()  # type: ignore[attr-defined]
+        pid2 = os.fork()  # type: ignore[attr-defined]
         if pid2 > 0:
             os._exit(0)
         # Grandchild: become the helper

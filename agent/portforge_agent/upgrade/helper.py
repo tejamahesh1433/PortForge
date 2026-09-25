@@ -51,7 +51,6 @@ def _pid_alive(pid: int) -> bool:
     if sys.platform == "win32":
         # os.kill(pid, 0) is unreliable on Windows (WinError 87 for missing PIDs).
         import ctypes
-        from ctypes import wintypes
 
         PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
         kernel32 = ctypes.windll.kernel32

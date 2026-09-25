@@ -12,19 +12,16 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from portforge_agent.upgrade.handoff import (
-    HelperLockError,
-    acquire_helper_lock,
     artifact_path_for,
     artifacts_dir,
     handoff_path,

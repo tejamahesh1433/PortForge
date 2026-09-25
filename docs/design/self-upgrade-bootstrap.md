@@ -291,4 +291,6 @@ wheel to synthetic development target:
 Plus unit tests for security rejects, idempotency, stale handoff, and full
 repo regression (backend/agent/dashboard/service + lint/typecheck/build/doctor).
 
-If macOS physical cannot run: result is **PARTIAL/BLOCKED**, not PASS.
+Phase 23B completed macOS physical first-attempt SUCCEEDED on an isolated
+LaunchAgent (`com.portforge.agent.phase23`) without touching the production
+Mac agent UUID. See `docs/qualification/phase23-self-upgrade-bootstrap.md`.
