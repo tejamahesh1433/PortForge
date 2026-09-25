@@ -51,9 +51,46 @@ from . import platform as pf
 # these as module-level constants (rather than recomputing a string per
 # call) is what makes service_ops.py's "does it already exist" / uninstall
 # logic simple: every operation addresses the exact same name.
-WINDOWS_TASK_NAME = "PortForge Agent"
-LAUNCHD_LABEL = "com.portforge.agent"
-SYSTEMD_UNIT_NAME = "portforge-agent.service"
+_DEFAULT_WINDOWS_TASK_NAME = "PortForge Agent"
+_DEFAULT_LAUNCHD_LABEL = "com.portforge.agent"
+_DEFAULT_SYSTEMD_UNIT_NAME = "portforge-agent.service"
+
+# Back-compat aliases (tests and external code may import these directly).
+WINDOWS_TASK_NAME = _DEFAULT_WINDOWS_TASK_NAME
+LAUNCHD_LABEL = _DEFAULT_LAUNCHD_LABEL
+SYSTEMD_UNIT_NAME = _DEFAULT_SYSTEMD_UNIT_NAME
+
+
+def windows_task_name() -> str:
+    return os.environ.get("PORTFORGE_WINDOWS_TASK_NAME") or _DEFAULT_WINDOWS_TASK_NAME
+
+
+def launchd_label() -> str:
+    return os.environ.get("PORTFORGE_MACOS_PLIST_LABEL") or _DEFAULT_LAUNCHD_LABEL
+
+
+def systemd_unit_name() -> str:
+    return os.environ.get("PORTFORGE_LINUX_SERVICE_NAME") or _DEFAULT_SYSTEMD_UNIT_NAME
+
+
+def service_environment() -> Dict[str, str]:
+    """Allowlisted PORTFORGE_* env vars to embed in generated service defs.
+
+    Qualification / multi-instance only. Never sourced from Central.
+    """
+    keys = (
+        "PORTFORGE_DATA_DIR",
+        "PORTFORGE_WINDOWS_TASK_NAME",
+        "PORTFORGE_LINUX_SERVICE_NAME",
+        "PORTFORGE_MACOS_PLIST_LABEL",
+        "PORTFORGE_MACOS_PLIST_PATH",
+    )
+    out: Dict[str, str] = {}
+    for key in keys:
+        val = os.environ.get(key)
+        if val:
+            out[key] = val
+    return out
 
 
 def resolve_python_executable(prefer_windowless: bool = True) -> str:
@@ -158,7 +195,7 @@ class WindowsTaskDefinition:
 def build_windows_task(python_executable: Optional[str] = None) -> WindowsTaskDefinition:
     args = agent_run_args(python_executable)
     command_line = " ".join(_quote_if_needed(a) for a in args)
-    return WindowsTaskDefinition(task_name=WINDOWS_TASK_NAME, command_line=command_line)
+    return WindowsTaskDefinition(task_name=windows_task_name(), command_line=command_line)
 
 
 def windows_create_args(definition: WindowsTaskDefinition) -> List[str]:
@@ -184,20 +221,20 @@ def windows_create_args(definition: WindowsTaskDefinition) -> List[str]:
     ]
 
 
-def windows_query_args(task_name: str = WINDOWS_TASK_NAME) -> List[str]:
-    return ["schtasks", "/Query", "/TN", task_name, "/FO", "LIST", "/V"]
+def windows_query_args(task_name: Optional[str] = None) -> List[str]:
+    return ["schtasks", "/Query", "/TN", task_name or windows_task_name(), "/FO", "LIST", "/V"]
 
 
-def windows_run_args(task_name: str = WINDOWS_TASK_NAME) -> List[str]:
-    return ["schtasks", "/Run", "/TN", task_name]
+def windows_run_args(task_name: Optional[str] = None) -> List[str]:
+    return ["schtasks", "/Run", "/TN", task_name or windows_task_name()]
 
 
-def windows_end_args(task_name: str = WINDOWS_TASK_NAME) -> List[str]:
-    return ["schtasks", "/End", "/TN", task_name]
+def windows_end_args(task_name: Optional[str] = None) -> List[str]:
+    return ["schtasks", "/End", "/TN", task_name or windows_task_name()]
 
 
-def windows_delete_args(task_name: str = WINDOWS_TASK_NAME) -> List[str]:
-    return ["schtasks", "/Delete", "/TN", task_name, "/F"]
+def windows_delete_args(task_name: Optional[str] = None) -> List[str]:
+    return ["schtasks", "/Delete", "/TN", task_name or windows_task_name(), "/F"]
 
 
 # ---------------------------------------------------------------------------
@@ -262,14 +299,16 @@ def build_launchd_plist_dict(
     otherwise-minimal PATH without sourcing any user shell configuration.
     """
     stdout_path, stderr_path = launchd_log_paths(log_dir)
+    env = {"PATH": build_launchd_path()}
+    env.update(service_environment())
     return {
-        "Label": LAUNCHD_LABEL,
+        "Label": launchd_label(),
         "ProgramArguments": agent_run_args(python_executable),
         "RunAtLoad": True,
         "KeepAlive": {"SuccessfulExit": False, "NetworkState": True},
         "StandardOutPath": str(stdout_path),
         "StandardErrorPath": str(stderr_path),
-        "EnvironmentVariables": {"PATH": build_launchd_path()},
+        "EnvironmentVariables": env,
     }
 
 
@@ -289,7 +328,7 @@ def launchd_plist_path() -> Path:
     """Per-user LaunchAgents directory -- never LaunchDaemons (system-wide,
     root-owned, wrong context for per-user PortForge state).
     """
-    return Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
+    return Path.home() / "Library" / "LaunchAgents" / f"{launchd_label()}.plist"
 
 
 # ---------------------------------------------------------------------------
@@ -313,6 +352,10 @@ def build_systemd_unit(python_executable: Optional[str] = None) -> str:
     """
     args = agent_run_args(python_executable)
     exec_start = " ".join(_quote_if_needed(a) for a in args)
+    env_lines = "".join(
+        f"Environment={key}={_quote_if_needed(val)}\n"
+        for key, val in service_environment().items()
+    )
     return (
         "[Unit]\n"
         "Description=PortForge Agent\n"
@@ -321,8 +364,12 @@ def build_systemd_unit(python_executable: Optional[str] = None) -> str:
         "[Service]\n"
         "Type=simple\n"
         f"ExecStart={exec_start}\n"
+        f"{env_lines}"
         "Restart=on-failure\n"
         "RestartSec=10\n"
+        # Only signal the main agent process on stop. Detached upgrade helpers
+        # must survive the agent exit so they can finish install + restart.
+        "KillMode=process\n"
         "KillSignal=SIGTERM\n"
         "TimeoutStopSec=20\n"
         "\n"
@@ -332,4 +379,4 @@ def build_systemd_unit(python_executable: Optional[str] = None) -> str:
 
 
 def systemd_unit_path() -> Path:
-    return Path.home() / ".config" / "systemd" / "user" / SYSTEMD_UNIT_NAME
+    return Path.home() / ".config" / "systemd" / "user" / systemd_unit_name()

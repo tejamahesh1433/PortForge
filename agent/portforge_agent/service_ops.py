@@ -18,7 +18,7 @@ Do not modify: ExpressVPN, Tailscale, Docker's own configuration, the
 Windows firewall, SSH configuration, or any unrelated systemd unit or
 launchd agent/daemon -- every operation below addresses only PortForge's
 own task/label/unit name (service_gen.WINDOWS_TASK_NAME /
-service_gen.LAUNCHD_LABEL / service_gen.SYSTEMD_UNIT_NAME) and touches no
+service_gen.launchd_label() / service_gen.systemd_unit_name()) and touches no
 other native service definition.
 """
 from __future__ import annotations
@@ -199,7 +199,7 @@ def _launchd_domain() -> str:
 
 
 def _launchd_service_target() -> str:
-    return f"{_launchd_domain()}/{gen.LAUNCHD_LABEL}"
+    return f"{_launchd_domain()}/{gen.launchd_label()}"
 
 
 def _launchd_is_registered() -> bool:
@@ -259,7 +259,7 @@ def _install_macos() -> ServiceOpResult:
     result = _run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)])
     if result.returncode == 0:
         return ServiceOpResult(
-            True, f"LaunchAgent '{gen.LAUNCHD_LABEL}' installed at {plist_path}.",
+            True, f"LaunchAgent '{gen.launchd_label()}' installed at {plist_path}.",
             detail=result.stdout.strip(),
         )
 
@@ -272,7 +272,7 @@ def _install_macos() -> ServiceOpResult:
         result = _run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)])
         if result.returncode == 0:
             return ServiceOpResult(
-                True, f"LaunchAgent '{gen.LAUNCHD_LABEL}' installed at {plist_path}.",
+                True, f"LaunchAgent '{gen.launchd_label()}' installed at {plist_path}.",
                 detail=result.stdout.strip(),
             )
 
@@ -384,7 +384,7 @@ def _uninstall_macos() -> ServiceOpResult:
     if not existed and boot_result.returncode != 0:
         return ServiceOpResult(True, "LaunchAgent was already absent (nothing to remove).")
     return ServiceOpResult(
-        True, f"LaunchAgent '{gen.LAUNCHD_LABEL}' removed.", detail=boot_result.stdout.strip()
+        True, f"LaunchAgent '{gen.launchd_label()}' removed.", detail=boot_result.stdout.strip()
     )
 
 
@@ -447,7 +447,7 @@ def _install_linux() -> ServiceOpResult:
             detail=(reload_result.stderr or reload_result.stdout).strip(), returncode=reload_result.returncode,
         )
 
-    enable_result = _run(["systemctl", "--user", "enable", gen.SYSTEMD_UNIT_NAME])
+    enable_result = _run(["systemctl", "--user", "enable", gen.systemd_unit_name()])
     if enable_result.returncode != 0:
         return ServiceOpResult(
             False, "Failed to enable systemd user unit.",
@@ -458,13 +458,13 @@ def _install_linux() -> ServiceOpResult:
     linger_note = _ensure_linger(getpass.getuser())
     return ServiceOpResult(
         True,
-        f"systemd user unit '{gen.SYSTEMD_UNIT_NAME}' installed and enabled at {unit_path}.",
+        f"systemd user unit '{gen.systemd_unit_name()}' installed and enabled at {unit_path}.",
         detail=f"{enable_result.stdout.strip()}\n{linger_note}".strip(),
     )
 
 
 def _status_linux() -> ServiceOpResult:
-    result = _run(["systemctl", "--user", "status", gen.SYSTEMD_UNIT_NAME])
+    result = _run(["systemctl", "--user", "status", gen.systemd_unit_name()])
     if result.returncode == 4:  # unit not found
         return ServiceOpResult(
             False, "systemd user unit is not installed.", detail=(result.stderr or result.stdout).strip(),
@@ -483,7 +483,7 @@ def _status_linux() -> ServiceOpResult:
 
 
 def _start_linux() -> ServiceOpResult:
-    result = _run(["systemctl", "--user", "start", gen.SYSTEMD_UNIT_NAME])
+    result = _run(["systemctl", "--user", "start", gen.systemd_unit_name()])
     if result.returncode == 0:
         return ServiceOpResult(True, "systemd user unit started.", detail=result.stdout.strip())
     return ServiceOpResult(
@@ -493,7 +493,7 @@ def _start_linux() -> ServiceOpResult:
 
 
 def _stop_linux() -> ServiceOpResult:
-    result = _run(["systemctl", "--user", "stop", gen.SYSTEMD_UNIT_NAME])
+    result = _run(["systemctl", "--user", "stop", gen.systemd_unit_name()])
     if result.returncode == 0:
         return ServiceOpResult(True, "systemd user unit stopped.", detail=result.stdout.strip())
     return ServiceOpResult(
@@ -506,7 +506,7 @@ def _uninstall_linux() -> ServiceOpResult:
     unit_path = gen.systemd_unit_path()
     existed = unit_path.exists()
 
-    disable_result = _run(["systemctl", "--user", "disable", "--now", gen.SYSTEMD_UNIT_NAME])
+    disable_result = _run(["systemctl", "--user", "disable", "--now", gen.systemd_unit_name()])
 
     if existed:
         try:
@@ -518,7 +518,7 @@ def _uninstall_linux() -> ServiceOpResult:
     if not existed and disable_result.returncode != 0:
         return ServiceOpResult(True, "systemd user unit was already absent (nothing to remove).")
     return ServiceOpResult(
-        True, f"systemd user unit '{gen.SYSTEMD_UNIT_NAME}' removed.", detail=disable_result.stdout.strip()
+        True, f"systemd user unit '{gen.systemd_unit_name()}' removed.", detail=disable_result.stdout.strip()
     )
 
 

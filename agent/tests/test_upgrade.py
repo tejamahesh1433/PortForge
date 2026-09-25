@@ -275,7 +275,7 @@ def test_run_upgrade_reports_failed_on_sha_mismatch(tmp_path):
 
 
 def test_run_upgrade_reports_failed_on_download_error(tmp_path):
-    """Network/download failure must fail closed without install."""
+    """Network/download failure must fail closed without spawning helper."""
     client = _make_client()
     payload = _good_payload()
 
@@ -285,12 +285,12 @@ def test_run_upgrade_reports_failed_on_download_error(tmp_path):
             "portforge_agent.upgrade.handler._download_artifact",
             side_effect=OSError("DNS resolution failed"),
         ),
-        patch("portforge_agent.upgrade.handler._install_wheel") as mock_install,
+        patch("portforge_agent.upgrade.handoff.spawn_upgrade_helper") as mock_spawn,
     ):
         result = run_upgrade(client, "test-host", payload, current_version="1.3.0")
 
     assert result is False
-    mock_install.assert_not_called()
+    mock_spawn.assert_not_called()
     states = [c.kwargs["state"] for c in client.report_upgrade_status.call_args_list]
     assert "DOWNLOADING" in states
     assert states[-1] == "FAILED"
@@ -298,7 +298,8 @@ def test_run_upgrade_reports_failed_on_download_error(tmp_path):
 
 
 def test_run_upgrade_reports_all_states_on_success(tmp_path):
-    """A successful upgrade reports DOWNLOADING, VERIFYING, INSTALLING, RESTARTING."""
+    """Phase 23: a successful upgrade reports DOWNLOADING, VERIFYING, RESTARTING
+    (no in-process INSTALLING; install is delegated to the detached helper)."""
     client = _make_client()
     payload = _good_payload()
 
@@ -306,17 +307,20 @@ def test_run_upgrade_reports_all_states_on_success(tmp_path):
         patch("portforge_agent.upgrade.handler.tempfile.mkdtemp", return_value=str(tmp_path)),
         patch("portforge_agent.upgrade.handler._download_artifact"),
         patch("portforge_agent.upgrade.handler._verify_sha256"),
-        patch("portforge_agent.upgrade.handler._install_wheel"),
-        patch("portforge_agent.upgrade.platform_restart.restart_service"),
+        patch("portforge_agent.upgrade.handoff.prepare_handoff_artifact",
+              return_value=tmp_path / "artifact.whl"),
+        patch("portforge_agent.upgrade.handoff.write_handoff"),
+        patch("portforge_agent.upgrade.handoff.spawn_upgrade_helper"),
     ):
         result = run_upgrade(client, "test-host", payload, current_version="1.3.0")
 
     assert result is True
     states = [c.kwargs["state"] for c in client.report_upgrade_status.call_args_list]
-    assert states == ["DOWNLOADING", "VERIFYING", "INSTALLING", "RESTARTING"]
+    assert states == ["DOWNLOADING", "VERIFYING", "RESTARTING"]
 
 
-def test_run_upgrade_returns_false_on_install_failure(tmp_path):
+def test_run_upgrade_returns_false_on_handoff_prepare_failure(tmp_path):
+    """Phase 23: if handoff artifact prepare fails, handler must return False."""
     client = _make_client()
     payload = _good_payload()
 
@@ -324,7 +328,8 @@ def test_run_upgrade_returns_false_on_install_failure(tmp_path):
         patch("portforge_agent.upgrade.handler.tempfile.mkdtemp", return_value=str(tmp_path)),
         patch("portforge_agent.upgrade.handler._download_artifact"),
         patch("portforge_agent.upgrade.handler._verify_sha256"),
-        patch("portforge_agent.upgrade.handler._install_wheel", side_effect=RuntimeError("pip exit 1")),
+        patch("portforge_agent.upgrade.handoff.prepare_handoff_artifact",
+              side_effect=OSError("disk full")),
     ):
         result = run_upgrade(client, "test-host", payload, current_version="1.3.0")
 
@@ -334,11 +339,10 @@ def test_run_upgrade_returns_false_on_install_failure(tmp_path):
     assert "RESTARTING" not in states
 
 
-def test_run_upgrade_returns_true_and_stays_restarting_on_restart_exception(tmp_path):
-    """If restart_service() raises, the handler must still return True (handoff to
-    Central reconciliation) and must NOT report FAILED.  The upgrade was reported
-    RESTARTING to Central; that terminal-adjacent state is the authority — Central's
-    heartbeat reconciliation decides the final outcome, not the old agent process."""
+def test_run_upgrade_returns_false_on_spawn_failure(tmp_path):
+    """Phase 23: if spawning the helper fails, the handler must report FAILED and
+    return False (the helper process was never started, so no one will finish
+    the install)."""
     client = _make_client()
     payload = _good_payload()
 
@@ -346,18 +350,18 @@ def test_run_upgrade_returns_true_and_stays_restarting_on_restart_exception(tmp_
         patch("portforge_agent.upgrade.handler.tempfile.mkdtemp", return_value=str(tmp_path)),
         patch("portforge_agent.upgrade.handler._download_artifact"),
         patch("portforge_agent.upgrade.handler._verify_sha256"),
-        patch("portforge_agent.upgrade.handler._install_wheel"),
-        patch(
-            "portforge_agent.upgrade.platform_restart.restart_service",
-            side_effect=RuntimeError("service manager unavailable"),
-        ),
+        patch("portforge_agent.upgrade.handoff.prepare_handoff_artifact",
+              return_value=tmp_path / "artifact.whl"),
+        patch("portforge_agent.upgrade.handoff.write_handoff"),
+        patch("portforge_agent.upgrade.handoff.spawn_upgrade_helper",
+              side_effect=OSError("spawn failed")),
     ):
         result = run_upgrade(client, "test-host", payload, current_version="1.3.0")
 
-    assert result is True
+    assert result is False
     states = [c.kwargs["state"] for c in client.report_upgrade_status.call_args_list]
     assert "RESTARTING" in states
-    assert "FAILED" not in states
+    assert "FAILED" in states
 
 
 # ---------------------------------------------------------------------------
@@ -686,8 +690,10 @@ def test_transient_error_retried_then_succeeds(tmp_path):
         patch("portforge_agent.upgrade.handler.tempfile.mkdtemp", return_value=str(tmp_path)),
         patch("portforge_agent.upgrade.handler._download_artifact", side_effect=flaky_download),
         patch("portforge_agent.upgrade.handler._verify_sha256"),
-        patch("portforge_agent.upgrade.handler._install_wheel"),
-        patch("portforge_agent.upgrade.platform_restart.restart_service"),
+        patch("portforge_agent.upgrade.handoff.prepare_handoff_artifact",
+              return_value=tmp_path / "artifact.whl"),
+        patch("portforge_agent.upgrade.handoff.write_handoff"),
+        patch("portforge_agent.upgrade.handoff.spawn_upgrade_helper"),
         patch("portforge_agent.upgrade.handler.time.sleep"),  # skip real sleep
     ):
         result = run_upgrade(client, "test-host", payload, current_version="1.3.0")

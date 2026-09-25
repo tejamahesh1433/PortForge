@@ -1,27 +1,33 @@
-"""Agent-side safe upgrade execution handler (Phase 10).
+"""Agent-side safe upgrade execution handler (Phase 10 / Phase 23).
 
-Control model (from docs/design/agent-upgrade-management.md):
+Control model (from docs/design/agent-upgrade-management.md and
+docs/design/self-upgrade-bootstrap.md):
   - Upgrade payload arrives via the authenticated heartbeat response.
   - Only structured fields are accepted: target_version, artifact_url,
     artifact_sha256, artifact_filename, id. No command/script/executable.
   - URL must be https; download is bounded (50 MB ceiling).
-  - SHA-256 is verified before any pip install -- mismatch fails closed.
-  - pip install uses sys.executable (never a path from Central), shell=False.
-  - Restart uses a hard-coded platform adapter (never payload-derived).
+  - SHA-256 is verified before any installation -- mismatch fails closed.
+  - pip install and service restart are performed by a detached helper
+    (portforge_agent.upgrade.helper) spawned after SHA verify, so the
+    running agent never pip-installs while holding its own files and
+    never drives the service-manager call that kills itself.
+  - Restart uses a hard-coded platform adapter inside the helper (never
+    payload-derived).
   - Identity files (host.json, credentials) are never touched.
 
-Status transitions reported to Central during a successful run:
-  DOWNLOADING → VERIFYING → INSTALLING → RESTARTING → (new process continues)
+Phase 23 status transitions reported to Central during a successful run:
+  DOWNLOADING -> VERIFYING -> RESTARTING -> (helper installs, new process)
 
-After RESTARTING is reported, this process calls restart_service() and exits.
-The new process reconnects and Central's heartbeat reconciliation advances the
-state to VERIFYING_HEALTH and then SUCCEEDED once the expected agent_version is
-confirmed.  Central — not the old agent process — owns those final transitions.
+After RESTARTING is reported the handoff record is written and the detached
+helper is spawned. Central s heartbeat reconciliation advances the state to
+VERIFYING_HEALTH -> SUCCEEDED once the expected agent_version is confirmed.
+Central - not the old agent process - owns those final transitions.
 """
 from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 import sys
 import tempfile
@@ -211,28 +217,13 @@ def _verify_sha256(path: Path, expected_hex: str) -> None:
 
 
 def _install_wheel(wheel_path: Path) -> None:
-    """Install the wheel into the current Python runtime via pip.
+    """Thin wrapper kept for backward compat with tests and qualification.
 
-    Uses sys.executable to guarantee the same interpreter as the running agent.
-    shell=False is the subprocess default and enforced by run_subprocess().
-    Raises RuntimeError if pip exits with a non-zero return code.
+    Phase 23: run_upgrade no longer calls this directly; the detached helper
+    calls handoff.install_wheel() with the recorded python_executable.
     """
-    from ..subprocess_util import run_subprocess
-
-    result = run_subprocess(
-        [
-            sys.executable, "-m", "pip", "install",
-            "--upgrade", "--force-reinstall", "--no-deps",
-            str(wheel_path),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"pip install failed (rc={result.returncode}): {result.stderr.strip()}"
-        )
+    from .handoff import install_wheel
+    install_wheel(sys.executable, wheel_path)
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +236,7 @@ def run_upgrade(
     pending: Dict[str, Any],
     current_version: str,
     allow_downgrade: bool = False,
+    data_dir: Optional[Path] = None,
 ) -> bool:
     """Execute a safe, structured upgrade received from Central.
 
@@ -350,42 +342,50 @@ def run_upgrade(
             _report("FAILED", failure_reason=str(exc))
             return False
 
-        # INSTALLING
-        _report("INSTALLING")
-        logger.info("Upgrade: installing wheel %s", tmp_path.name)
+        # Phase 23: copy artifact to upgrade area, write typed handoff, spawn
+        # the detached helper that installs + restarts after this process exits.
+        import uuid as _uuid
+        from datetime import datetime, timezone
+        from .handoff import prepare_handoff_artifact, write_handoff, spawn_upgrade_helper
+
         try:
-            _install_wheel(tmp_path)
+            stored_wheel = prepare_handoff_artifact(
+                tmp_path,
+                artifact_sha256,
+                data_dir,
+                filename=safe_filename if str(safe_filename).endswith(".whl") else None,
+            )
+            record = {
+                "schema_version": 1,
+                "upgrade_id": upgrade_id,
+                "host_id": host_id,
+                "expected_current_version": current_version,
+                "target_version": target_version,
+                "artifact_filename": stored_wheel.name,
+                "artifact_sha256": artifact_sha256,
+                "python_executable": sys.executable,
+                "old_pid": os.getpid(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "nonce": str(_uuid.uuid4()),
+                "stage": "prepared",
+            }
+            write_handoff(record, data_dir)
         except Exception as exc:
-            logger.error("Upgrade installation failed: %s", exc)
-            _report("FAILED", failure_reason=f"Installation failed: {exc}")
+            logger.error("Upgrade handoff prepare failed: %s", exc)
+            _report("FAILED", failure_reason=f"Handoff prepare failed: {exc}")
             return False
 
-        # RESTARTING
         _report("RESTARTING")
-        logger.info("Upgrade: restarting agent service for %s", target_version)
-        try:
-            from .platform_restart import restart_service
-            restart_service()
-        except Exception as exc:
-            # The restart request failed to be delivered to the service manager,
-            # but we have already reported RESTARTING to Central.  Do NOT report
-            # FAILED here: Central's heartbeat reconciliation is the authority
-            # on whether the new process actually came up.  If the restart truly
-            # did not happen, the upgrade will remain in RESTARTING indefinitely
-            # and an operator can inspect or manually cancel it.  Reporting
-            # FAILED from this path would overwrite RESTARTING with a terminal
-            # state even when the service manager may have succeeded.
-            logger.warning(
-                "Upgrade restart call raised an exception — handoff to Central "
-                "reconciliation (state stays RESTARTING): %s",
-                exc,
-            )
-            return True
+        logger.info("Upgrade: handoff prepared, spawning helper for %s", target_version)
 
-        # Restart initiated. The new process reconnects and Central's heartbeat
-        # reconciliation advances RESTARTING → VERIFYING_HEALTH → SUCCEEDED
-        # once the expected agent_version is confirmed.
-        logger.info("Upgrade to %s complete. Agent process restarting.", target_version)
+        try:
+            spawn_upgrade_helper(data_dir)
+        except Exception as exc:
+            logger.error("Upgrade: failed to spawn helper: %s", exc)
+            _report("FAILED", failure_reason=f"Helper spawn failed: {exc}")
+            return False
+
+        logger.info("Upgrade to %s: helper spawned, agent process exiting.", target_version)
         return True
 
     finally:
