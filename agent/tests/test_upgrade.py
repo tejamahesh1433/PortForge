@@ -611,20 +611,77 @@ def test_restart_via_systemd_uses_literal_unit():
     assert cmd == ["systemctl", "--user", "restart", "--no-block", "portforge-agent.service"]
 
 
-def test_restart_via_launchctl_uses_literal_plist_label(tmp_path):
+def test_restart_via_launchctl_schedules_kickstart_not_self_bootout(tmp_path, monkeypatch):
+    """Phase 23C: never bootout the agent job from inside the upgrade process."""
     from portforge_agent.upgrade import platform_restart as pr
 
-    plist = tmp_path / "com.portforge.agent.plist"
-    plist.write_text("stub")
-    with patch("portforge_agent.subprocess_util.run_subprocess") as mock_run:
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        # os.getuid is POSIX-only; patch the module attribute used by the adapter.
-        with patch.object(pr.os, "getuid", create=True, return_value=501):
-            pr.restart_via_launchctl(str(plist))
+    home = tmp_path / "home"
+    launch_agents = home / "Library" / "LaunchAgents"
+    launch_agents.mkdir(parents=True)
+    plist = launch_agents / "com.portforge.agent.plist"
+    plist.write_text("stub", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("PORTFORGE_MACOS_PLIST_PATH", str(plist))
+    monkeypatch.setenv("PORTFORGE_MACOS_PLIST_LABEL", "com.portforge.agent")
+    # Path.home() may not honor HOME on Windows; force via expanduser side.
+    monkeypatch.setattr(pr.Path, "home", classmethod(lambda cls: home))
 
-    cmds = [c.args[0] for c in mock_run.call_args_list]
-    assert any(cmd[0] == "launchctl" and "bootstrap" in cmd for cmd in cmds)
-    assert all(str(plist) in cmd for cmd in cmds if "bootstrap" in cmd or "bootout" in cmd)
+    with patch("subprocess.Popen") as mock_popen:
+        with patch.object(pr.os, "getuid", create=True, return_value=501):
+            with patch.object(pr.os, "getpid", return_value=4242):
+                pr.restart_via_launchctl(str(plist))
+
+    mock_popen.assert_called_once()
+    args = mock_popen.call_args.args[0]
+    assert args[0].endswith("python") or "python" in args[0].lower() or args[0] == __import__("sys").executable
+    assert args[1] == "-c"
+    kick_src = args[2]
+    assert "launchctl" in kick_src
+    assert "kickstart" in kick_src
+    assert "bootout" not in kick_src
+    assert "4242" in kick_src
+    assert "com.portforge.agent" in kick_src
+    assert mock_popen.call_args.kwargs.get("start_new_session") is True
+
+
+def test_restart_via_launchctl_rejects_arbitrary_label(tmp_path, monkeypatch):
+    from portforge_agent.upgrade import platform_restart as pr
+
+    home = tmp_path / "home"
+    launch_agents = home / "Library" / "LaunchAgents"
+    launch_agents.mkdir(parents=True)
+    plist = launch_agents / "evil.plist"
+    plist.write_text("stub", encoding="utf-8")
+    monkeypatch.setattr(pr.Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("PORTFORGE_MACOS_PLIST_LABEL", "com.evil.agent")
+    with patch("subprocess.Popen") as mock_popen:
+        with patch.object(pr.os, "getuid", create=True, return_value=501):
+            try:
+                pr.restart_via_launchctl(str(plist))
+                raised = False
+            except RuntimeError as exc:
+                raised = True
+                assert "non-PortForge" in str(exc)
+    assert raised
+    mock_popen.assert_not_called()
+
+
+def test_restart_via_launchctl_allows_disposable_portforge_label(tmp_path, monkeypatch):
+    from portforge_agent.upgrade import platform_restart as pr
+
+    home = tmp_path / "home"
+    launch_agents = home / "Library" / "LaunchAgents"
+    launch_agents.mkdir(parents=True)
+    plist = launch_agents / "com.portforge.agent.phase23c.plist"
+    plist.write_text("stub", encoding="utf-8")
+    monkeypatch.setattr(pr.Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("PORTFORGE_MACOS_PLIST_LABEL", "com.portforge.agent.phase23c")
+    monkeypatch.setenv("PORTFORGE_MACOS_PLIST_PATH", str(plist))
+    with patch("subprocess.Popen") as mock_popen:
+        with patch.object(pr.os, "getuid", create=True, return_value=501):
+            with patch.object(pr.os, "getpid", return_value=99):
+                pr.restart_via_launchctl(str(plist))
+    assert "com.portforge.agent.phase23c" in mock_popen.call_args.args[0][2]
 
 
 def test_restart_service_dispatches_by_platform():

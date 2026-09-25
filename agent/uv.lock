@@ -4,7 +4,7 @@ requires-python = ">=3.9"
 
 [[package]]
 name = "portforge-agent"
-version = "1.5.2"
+version = "1.5.3"
 source = { editable = "." }
 dependencies = [
     { name = "psutil" },
